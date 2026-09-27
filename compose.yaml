@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: printers
+      POSTGRES_USER: printers
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configure POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U printers"]
+      interval: 5s
+      retries: 15
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://printers:${POSTGRES_PASSWORD}@db:5432/printers
+      SESSION_SECRET: ${SESSION_SECRET:?Configure SESSION_SECRET}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Configure ADMIN_PASSWORD}
+      VIEWER_PASSWORD: ${VIEWER_PASSWORD:?Configure VIEWER_PASSWORD}
+      SNMP_COMMUNITY: ${SNMP_COMMUNITY:-public}
+      COLLECTION_HOUR_UTC: ${COLLECTION_HOUR_UTC:-12}
+      TZ: America/Sao_Paulo
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - uploads:/srv/uploads
+volumes:
+  pgdata:
+  uploads:

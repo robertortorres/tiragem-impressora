@@ -1,0 +1,63 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Impressoras</h1>
+<p class="muted">Cadastre, corrija ou desative equipamentos. Impressoras desativadas continuam nos relatórios e deixam de ser coletadas.</p>
+<section class="card">
+  <h2>Adicionar impressora</h2>
+  <form class="row" method="post" action="/printers">
+    <input type="hidden" name="token" value="{{csrf}}">
+    <label>Nome<input name="name" maxlength="160" required></label>
+    <label>Modelo<input name="model" maxlength="100"></label>
+    <label>Número de série<input name="serial" maxlength="80"></label>
+    <label>IP<input name="ip" placeholder="192.168.1.10"></label>
+    <label>Proprietário<input name="owner" maxlength="100"></label>
+    <label>Responsável<input name="group_name" maxlength="100"></label>
+    <label>OID P&B<input name="oid_bw" maxlength="100"></label>
+    <label>OID cor<input name="oid_color" maxlength="100"></label>
+    <button>Adicionar</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Coleta e leitura inicial</h2>
+  <p class="muted">Confirme IPs, séries e OIDs antes de iniciar a coleta. Endereços originais com formato inválido não foram ativados.</p>
+  <form method="post" action="/collect"><input type="hidden" name="token" value="{{csrf}}"><button>Coletar agora</button></form>
+  <h2>Inserir leitura de referência</h2>
+  <form class="row" method="post" action="/readings">
+    <input type="hidden" name="token" value="{{csrf}}">
+    <label>Impressora<select name="printer_id">{% for p in printers %}<option value="{{p.id}}">{{p.name}} · {{p.serial or 'sem série'}}</option>{% endfor %}</select></label>
+    <label>Data<input type="date" name="day" required></label>
+    <label>Tipo<select name="kind"><option value="bw">P&B</option><option value="color">Colorido</option></select></label>
+    <label>Contador acumulado<input type="number" name="counter" min="0" required></label>
+    <button>Salvar leitura</button>
+  </form>
+</section>
+{% for p in printers %}
+<section class="card">
+  <h2>{{p.name}} · {{p.model}} <small class="{{'good' if p.active else 'bad'}}">{{'Ativa' if p.active else 'Desativada'}}</small></h2>
+  <p class="muted">IP na planilha: {{p.raw_ip or '—'}} · Proprietário: {{p.owner or '—'}}</p>
+  <form class="row" method="post" action="/printers/{{p.id}}">
+    <input type="hidden" name="token" value="{{csrf}}">
+    <label>Nome<input name="name" value="{{p.name}}" maxlength="160" required></label>
+    <label>Modelo<input name="model" value="{{p.model}}" maxlength="100"></label>
+    <label>Série<input name="serial" value="{{p.serial or ''}}" maxlength="80"></label>
+    <label>IP<input name="ip" value="{{p.ip}}" placeholder="192.168.1.10"></label>
+    <label>Proprietário<input name="owner" value="{{p.owner}}" maxlength="100"></label>
+    <label>Responsável<input name="group_name" value="{{p.group_name}}" maxlength="100"></label>
+    <label>OID P&B<input name="oid_bw" value="{{p.oid_bw}}" maxlength="100"></label>
+    <label>OID cor<input name="oid_color" value="{{p.oid_color}}" maxlength="100"></label>
+    <button>Salvar alterações</button>
+  </form>
+  <div class="row" style="margin-top:16px">
+    <form method="post" action="/printers/{{p.id}}/status">
+      <input type="hidden" name="token" value="{{csrf}}">
+      <input type="hidden" name="active" value="{{0 if p.active else 1}}">
+      <button>{{'Desativar' if p.active else 'Reativar'}}</button>
+    </form>
+    <form method="post" action="/printers/{{p.id}}/delete" onsubmit="return confirm('Excluir definitivamente esta impressora? A exclusão só é possível sem leituras registradas.')">
+      <input type="hidden" name="token" value="{{csrf}}">
+      <button style="background:#a63838;border-color:#a63838">Excluir sem histórico</button>
+    </form>
+  </div>
+</section>
+{% endfor %}
+{% endblock %}

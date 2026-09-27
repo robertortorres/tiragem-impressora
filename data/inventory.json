@@ -1,0 +1,218 @@
+[
+  {
+    "name": "Sala 01",
+    "ip": "",
+    "raw_ip": "192220111215",
+    "serial": "X3CF000355",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 02",
+    "ip": "",
+    "raw_ip": "192220110230",
+    "serial": "X3CF000569",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 03",
+    "ip": "",
+    "raw_ip": "192220111100",
+    "serial": "X3CF000269",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 04",
+    "ip": "",
+    "raw_ip": "192220111214",
+    "serial": "X3CF000236",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 05 PB",
+    "ip": "",
+    "raw_ip": "192220110231",
+    "serial": "X3CF000482",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 05 Color",
+    "ip": "",
+    "raw_ip": "192220110245",
+    "serial": "",
+    "model": "WF-C5890",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 06",
+    "ip": "192.220.110.84",
+    "raw_ip": "192.220.110.84",
+    "serial": "X3CF000597",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 07",
+    "ip": "192.220.110.93",
+    "raw_ip": "192.220.110.93",
+    "serial": "X3CF000443",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 08",
+    "ip": "192.220.110.67",
+    "raw_ip": "192.220.110.67",
+    "serial": "X3B7026793",
+    "model": "WF-C5790",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 11",
+    "ip": "",
+    "raw_ip": "192220111181",
+    "serial": "X3CF000160",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 12",
+    "ip": "192.220.110.91",
+    "raw_ip": "192.220.110.91",
+    "serial": "X3CF000609",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 14",
+    "ip": "",
+    "raw_ip": "192220111102",
+    "serial": "X3CF000607",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 15",
+    "ip": "192.220.110.87",
+    "raw_ip": "192.220.110.87",
+    "serial": "X3CF000623",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 16",
+    "ip": "",
+    "raw_ip": "192220110159",
+    "serial": "X3CF000238",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 17",
+    "ip": "",
+    "raw_ip": "192220110174",
+    "serial": "X3CF000319",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 18",
+    "ip": "",
+    "raw_ip": "192220110202",
+    "serial": "X3CF003513",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Sala 21",
+    "ip": "192.220.110.89",
+    "raw_ip": "192.220.110.89",
+    "serial": "X3CF000521",
+    "model": "WF-M5299",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Triaz",
+    "ip": "",
+    "raw_ip": "192.220.11.1.119",
+    "serial": "X3BK020302",
+    "model": "WF-M5799",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Faturamento",
+    "ip": "",
+    "raw_ip": "192220111211",
+    "serial": "X3BK020820",
+    "model": "WF-M5799",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Boas Vindas",
+    "ip": "",
+    "raw_ip": "192220111112",
+    "serial": "X3BK025723",
+    "model": "WF-M5799",
+    "owner": "Maquim",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Recepção",
+    "ip": "192.220.111.64",
+    "raw_ip": "192.220.111.64",
+    "serial": "35C56558",
+    "model": "iR1643i II",
+    "owner": "Medsel",
+    "group_name": "Maquim"
+  },
+  {
+    "name": "Financeiro",
+    "ip": "192.220.110.66",
+    "raw_ip": "192.220.110.66",
+    "serial": "X2NZ251682",
+    "model": "L395 Series",
+    "owner": "Medsel",
+    "group_name": "Medsel"
+  },
+  {
+    "name": "Comercial Triaz",
+    "ip": "192.220.110.77",
+    "raw_ip": "192.220.110.77",
+    "serial": "",
+    "model": "L355 Series",
+    "owner": "Medsel",
+    "group_name": "Medsel"
+  },
+  {
+    "name": "Sala 20",
+    "ip": "192.220.110.69",
+    "raw_ip": "192.220.110.69",
+    "serial": "",
+    "model": "L3250",
+    "owner": "Medsel",
+    "group_name": "Medsel"
+  }
+]
