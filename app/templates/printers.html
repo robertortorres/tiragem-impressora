@@ -14,8 +14,18 @@
     <label>Responsável<input name="group_name" maxlength="100"></label>
     <label>OID P&B<input name="oid_bw" maxlength="100"></label>
     <label>OID cor<input name="oid_color" maxlength="100"></label>
+    <label>SNMP<select name="snmp_version"><option value="2c">v2c</option><option value="3">v3</option></select></label>
+    <label>Tarifa P&B (R$)<input name="rate_bw" value="0" inputmode="decimal"></label>
+    <label>Tarifa cor (R$)<input name="rate_color" value="0" inputmode="decimal"></label>
+    <label>Franquia P&B<input name="allowance_bw" type="number" min="0" value="0"></label>
+    <label>Franquia cor<input name="allowance_color" type="number" min="0" value="0"></label>
+    <label>Limite contador (opcional)<input name="rollover" type="number" min="2"></label>
     <button>Adicionar</button>
   </form>
+</section>
+<section class="card"><h2>Importar histórico do LibreNMS</h2>
+  <p class="muted">CSV UTF-8: date, serial (ou hostname/ip), bw e color com contadores acumulados. Aceita também kind + counter. Nenhuma leitura existente será sobrescrita.</p>
+  <form class="row" method="post" action="/import/librenms" enctype="multipart/form-data"><input type="hidden" name="token" value="{{csrf}}"><label>Arquivo CSV<input type="file" name="file" accept=".csv,text/csv" required></label><button>Importar histórico</button></form>
 </section>
 <section class="card">
   <h2>Coleta e leitura inicial</h2>
@@ -45,6 +55,12 @@
     <label>Responsável<input name="group_name" value="{{p.group_name}}" maxlength="100"></label>
     <label>OID P&B<input name="oid_bw" value="{{p.oid_bw}}" maxlength="100"></label>
     <label>OID cor<input name="oid_color" value="{{p.oid_color}}" maxlength="100"></label>
+    <label>SNMP<select name="snmp_version"><option value="2c" {% if p.snmp_version=='2c' %}selected{% endif %}>v2c</option><option value="3" {% if p.snmp_version=='3' %}selected{% endif %}>v3</option></select></label>
+    <label>Tarifa P&B (R$)<input name="rate_bw" value="{{p.rate_bw}}" inputmode="decimal"></label>
+    <label>Tarifa cor (R$)<input name="rate_color" value="{{p.rate_color}}" inputmode="decimal"></label>
+    <label>Franquia P&B<input name="allowance_bw" type="number" min="0" value="{{p.allowance_bw}}"></label>
+    <label>Franquia cor<input name="allowance_color" type="number" min="0" value="{{p.allowance_color}}"></label>
+    <label>Limite contador (opcional)<input name="rollover" type="number" min="2" value="{{p.rollover or ''}}"></label>
     <button>Salvar alterações</button>
   </form>
   <div class="row" style="margin-top:16px">

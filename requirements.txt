@@ -7,3 +7,4 @@ python-multipart==0.0.20
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 pdfplumber==0.11.6
+itsdangerous==2.2.0
