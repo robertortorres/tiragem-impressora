@@ -63,6 +63,16 @@ class Workflows(unittest.TestCase):
         self.assertEqual(self.client.get('/printers').status_code,403)
         self.assertEqual(self.client.post('/printers',data={'name':'Bloqueada','token':token}).status_code,403)
         self.assertEqual(self.client.get('/').status_code,200)
+    def test_report_all_printers_with_empty_filter(self):
+        self.login('admin','admin-password-for-tests')
+        filters={'start':'2026-09-28','end':'2026-09-28','printer_id':'','group':''}
+        response=self.client.get('/',params=filters)
+        self.assertEqual(response.status_code,200)
+        self.assertIn('Relatório por período',response.text)
+        export=self.client.get('/export.csv',params=filters)
+        self.assertEqual(export.status_code,200)
+        self.assertIn('Impressora',export.text)
+        self.assertEqual(self.client.get('/',params={**filters,'printer_id':'abc'}).status_code,400)
     def test_discovery_classifies_only_verified_monochrome(self):
         mono=Printer(name='Mono',model='WF-M5799',ip='192.0.2.10',snmp_version='2c',oid_bw='',oid_color='')
         color=Printer(name='Color',model='WF-C5890',ip='192.0.2.11',snmp_version='2c',oid_bw='',oid_color='')
