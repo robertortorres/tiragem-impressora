@@ -258,11 +258,15 @@ def printers_page(request:Request):
     with Session(engine) as db:return page(request,'printers.html',printers=db.scalars(select(Printer).order_by(Printer.name)).all())
 def printer_fields(db, name, serial, model, ip, owner, group_name, oid_bw, oid_color, snmp_version, rate_bw, rate_color, allowance_bw, allowance_color, rollover, exclude_id=None):
     import ipaddress
+    rollover = rollover.strip()
+    if rollover and (not rollover.isascii() or not rollover.isdecimal()):
+        raise HTTPException(400,'Limite do contador deve ser um número inteiro')
+    rollover_value = int(rollover) if rollover else None
     values = dict(name=name.strip(), serial=serial.strip() or None, model=model.strip(),
                   ip=ip.strip(), owner=owner.strip(), group_name=group_name.strip(),
                   oid_bw=oid_bw.strip(), oid_color=oid_color.strip(), snmp_version=snmp_version,
                   rate_bw=money(rate_bw),rate_color=money(rate_color),
-                  allowance_bw=allowance_bw,allowance_color=allowance_color,rollover=rollover or None)
+                  allowance_bw=allowance_bw,allowance_color=allowance_color,rollover=rollover_value)
     if not values['name'] or len(values['name'])>160:
         raise HTTPException(400,'Informe um nome de até 160 caracteres')
     limits={'serial':80,'model':100,'owner':100,'group_name':100,'oid_bw':100,'oid_color':100}
@@ -273,7 +277,7 @@ def printer_fields(db, name, serial, model, ip, owner, group_name, oid_bw, oid_c
         except ValueError:raise HTTPException(400,'IP inválido')
     if any(values[k] and not VALID_OID.fullmatch(values[k]) for k in ('oid_bw','oid_color')):
         raise HTTPException(400,'OID inválido')
-    if snmp_version not in ('2c','3') or any(values[k]<0 for k in ('rate_bw','rate_color','allowance_bw','allowance_color')) or (rollover is not None and rollover<2):
+    if snmp_version not in ('2c','3') or any(values[k]<0 for k in ('rate_bw','rate_color','allowance_bw','allowance_color')) or (rollover_value is not None and rollover_value<2):
         raise HTTPException(400,'Configuração de coleta/cobrança inválida')
     if values['serial']:
         existing=db.scalar(select(Printer).where(Printer.serial==values['serial']))
@@ -281,7 +285,7 @@ def printer_fields(db, name, serial, model, ip, owner, group_name, oid_bw, oid_c
             raise HTTPException(400,'Número de série já cadastrado')
     return values
 @app.post('/printers')
-def add_printer(request:Request,name:str=Form(),serial:str=Form(''),model:str=Form(''),ip:str=Form(''),owner:str=Form(''),group_name:str=Form(''),oid_bw:str=Form(''),oid_color:str=Form(''),snmp_version:str=Form('2c'),rate_bw:str=Form('0'),rate_color:str=Form('0'),allowance_bw:int=Form(0),allowance_color:int=Form(0),rollover:int|None=Form(None),token:str=Form()):
+def add_printer(request:Request,name:str=Form(),serial:str=Form(''),model:str=Form(''),ip:str=Form(''),owner:str=Form(''),group_name:str=Form(''),oid_bw:str=Form(''),oid_color:str=Form(''),snmp_version:str=Form('2c'),rate_bw:str=Form('0'),rate_color:str=Form('0'),allowance_bw:int=Form(0),allowance_color:int=Form(0),rollover:str=Form(''),token:str=Form()):
     authorize(request,True);csrf(request,token)
     with Session(engine) as db:
         values=printer_fields(db,name,serial,model,ip,owner,group_name,oid_bw,oid_color,snmp_version,rate_bw,rate_color,allowance_bw,allowance_color,rollover)
@@ -290,7 +294,7 @@ def add_printer(request:Request,name:str=Form(),serial:str=Form(''),model:str=Fo
         db.commit()
     return redirect('/printers')
 @app.post('/printers/{printer_id}')
-def edit_printer(request:Request,printer_id:int,name:str=Form(),serial:str=Form(''),model:str=Form(''),ip:str=Form(''),owner:str=Form(''),group_name:str=Form(''),oid_bw:str=Form(''),oid_color:str=Form(''),snmp_version:str=Form('2c'),rate_bw:str=Form('0'),rate_color:str=Form('0'),allowance_bw:int=Form(0),allowance_color:int=Form(0),rollover:int|None=Form(None),token:str=Form()):
+def edit_printer(request:Request,printer_id:int,name:str=Form(),serial:str=Form(''),model:str=Form(''),ip:str=Form(''),owner:str=Form(''),group_name:str=Form(''),oid_bw:str=Form(''),oid_color:str=Form(''),snmp_version:str=Form('2c'),rate_bw:str=Form('0'),rate_color:str=Form('0'),allowance_bw:int=Form(0),allowance_color:int=Form(0),rollover:str=Form(''),token:str=Form()):
     authorize(request,True);csrf(request,token)
     with Session(engine) as db:
         p=db.get(Printer,printer_id)
