@@ -4,6 +4,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -13,7 +14,7 @@ os.environ['DATABASE_URL']='sqlite:///'+str(Path(_dir.name)/'app.db')
 os.environ['SESSION_SECRET']='integration-test-secret'
 os.environ['ADMIN_PASSWORD']='admin-password-for-tests'
 os.environ['VIEWER_PASSWORD']='viewer-password-for-tests'
-from app.main import app,engine,Printer,Reading
+from app.main import app,engine,Printer,Reading,PollSample,BillingConfig,discover_oid
 
 class Workflows(unittest.TestCase):
     @classmethod
@@ -62,3 +63,30 @@ class Workflows(unittest.TestCase):
         self.assertEqual(self.client.get('/printers').status_code,403)
         self.assertEqual(self.client.post('/printers',data={'name':'Bloqueada','token':token}).status_code,403)
         self.assertEqual(self.client.get('/').status_code,200)
+    def test_discovery_classifies_only_verified_monochrome(self):
+        mono=Printer(name='Mono',model='WF-M5799',ip='192.0.2.10',snmp_version='2c',oid_bw='',oid_color='')
+        color=Printer(name='Color',model='WF-C5890',ip='192.0.2.11',snmp_version='2c',oid_bw='',oid_color='')
+        with patch('app.main.marker_values',side_effect=lambda ip,version,column:{'1.1':{4:23777,3:7,6:1}[column]}):
+            discover_oid(mono)
+            discover_oid(color)
+        self.assertEqual(mono.oid_bw,'1.3.6.1.2.1.43.10.2.1.4.1.1')
+        self.assertEqual(color.oid_bw,'')
+        self.assertEqual(color.oid_color,'')
+        self.assertTrue(color.oid_candidate)
+    def test_manual_collection_preserves_hourly_samples(self):
+        token=self.login('admin','admin-password-for-tests')
+        with patch('app.main.marker_values',return_value={}):
+            response=self.client.post('/printers',data={'name':'Coleta','serial':'POLL001','model':'WF-M5299',
+                'ip':'192.0.2.12','oid_bw':'1.3.6.1.2.1.43.10.2.1.4.1.1','token':token})
+        self.assertEqual(response.status_code,200)
+        with Session(engine) as db:pid=db.query(Printer).filter_by(serial='POLL001').one().id
+        with patch('app.main.snmp',side_effect=[50,55]):
+            for _ in range(2):
+                response=self.client.post(f'/printers/{pid}/collect',data={'token':token})
+                self.assertEqual(response.status_code,200)
+        with Session(engine) as db:
+            self.assertEqual(db.query(PollSample).filter_by(printer_id=pid).count(),2)
+            self.assertEqual(db.query(Reading).filter_by(printer_id=pid).one().counter,55)
+        response=self.client.post('/settings',data={'fixed_fee':'0','jump_limit':'2000','collection_interval_hours':'6','token':token})
+        self.assertEqual(response.status_code,200)
+        with Session(engine) as db:self.assertEqual(db.get(BillingConfig,1).collection_interval_hours,6)
