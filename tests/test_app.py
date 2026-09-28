@@ -27,9 +27,17 @@ class Workflows(unittest.TestCase):
         return re.search(r'name="token" value="([^"]+)',response.text).group(1)
     def test_create_delete_and_preserve_history(self):
         token=self.login('admin','admin-password-for-tests')
-        response=self.client.post('/printers',data={'name':'Teste','serial':'TEST-SERIAL','token':token})
+        response=self.client.post('/printers',data={'name':'Teste','serial':'TEST-SERIAL','rollover':'','token':token})
         self.assertEqual(response.status_code,200)
         with Session(engine) as db:pid=db.query(Printer).filter_by(serial='TEST-SERIAL').one().id
+        response=self.client.post(f'/printers/{pid}',data={
+            'name':'Teste atualizado','serial':'TEST-SERIAL','ip':'192.0.2.1',
+            'rollover':'','token':token},follow_redirects=True)
+        self.assertEqual(response.status_code,200)
+        with Session(engine) as db:
+            printer=db.get(Printer,pid)
+            self.assertEqual(printer.name,'Teste atualizado')
+            self.assertIsNone(printer.rollover)
         self.client.post('/readings',data={'printer_id':pid,'day':'2026-09-10','kind':'bw','counter':'50','token':token})
         response=self.client.post(f'/printers/{pid}/delete',data={'token':token})
         self.assertEqual(response.status_code,409)
