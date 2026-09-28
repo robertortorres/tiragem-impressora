@@ -182,7 +182,8 @@ def snmp_args(version,command):
         username=os.environ.get('SNMPV3_USER');auth=os.environ.get('SNMPV3_AUTH_PASSWORD');privacy=os.environ.get('SNMPV3_PRIV_PASSWORD')
         if not all((username,auth,privacy)):return None
         return [command,'-v','3','-l','authPriv','-u',username,'-a','SHA','-A',auth,'-x','AES','-X',privacy]
-    return [command,'-v','2c','-c',os.environ.get('SNMP_COMMUNITY','public')]
+    if version not in ('1','2c'):return None
+    return [command,'-v',version,'-c',os.environ.get('SNMP_COMMUNITY','public')]
 def snmp(ip,oid,version='2c'):
     if not ip or not VALID_OID.fullmatch(oid):return None
     try:
@@ -416,7 +417,7 @@ def printer_fields(db, name, serial, model, ip, owner, group_name, oid_bw, oid_c
         except ValueError:raise HTTPException(400,'IP inválido')
     if any(values[k] and not VALID_OID.fullmatch(values[k]) for k in ('oid_bw','oid_color')):
         raise HTTPException(400,'OID inválido')
-    if snmp_version not in ('2c','3') or any(values[k]<0 for k in ('rate_bw','rate_color','allowance_bw','allowance_color')) or (rollover_value is not None and rollover_value<2):
+    if snmp_version not in ('1','2c','3') or any(values[k]<0 for k in ('rate_bw','rate_color','allowance_bw','allowance_color')) or (rollover_value is not None and rollover_value<2):
         raise HTTPException(400,'Configuração de coleta/cobrança inválida')
     if values['serial']:
         existing=db.scalar(select(Printer).where(Printer.serial==values['serial']))

@@ -14,7 +14,7 @@ os.environ['DATABASE_URL']='sqlite:///'+str(Path(_dir.name)/'app.db')
 os.environ['SESSION_SECRET']='integration-test-secret'
 os.environ['ADMIN_PASSWORD']='admin-password-for-tests'
 os.environ['VIEWER_PASSWORD']='viewer-password-for-tests'
-from app.main import app,engine,Printer,Reading,PollSample,BillingConfig,DiscoveryRun,discover_oid
+from app.main import app,engine,Printer,Reading,PollSample,BillingConfig,DiscoveryRun,discover_oid,snmp_args
 
 class Workflows(unittest.TestCase):
     @classmethod
@@ -73,6 +73,15 @@ class Workflows(unittest.TestCase):
         self.assertEqual(export.status_code,200)
         self.assertIn('Impressora',export.text)
         self.assertEqual(self.client.get('/',params={**filters,'printer_id':'abc'}).status_code,400)
+    def test_snmp_v1_can_be_selected_and_used(self):
+        token=self.login('admin','admin-password-for-tests')
+        self.assertEqual(snmp_args('1','snmpget')[:3],['snmpget','-v','1'])
+        with patch('app.main.marker_values',return_value={}):
+            response=self.client.post('/printers',data={'name':'Canon teste','serial':'CANON-V1-TEST',
+                'ip':'192.0.2.80','model':'iR1643i II','snmp_version':'1','token':token})
+        self.assertEqual(response.status_code,200)
+        with Session(engine) as db:self.assertEqual(db.query(Printer).filter_by(serial='CANON-V1-TEST').one().snmp_version,'1')
+        self.assertIn('value="1" selected',response.text)
     def test_discovery_classifies_only_verified_monochrome(self):
         mono=Printer(name='Mono',model='WF-M5799',ip='192.0.2.10',snmp_version='2c',oid_bw='',oid_color='')
         color=Printer(name='Color',model='WF-C5890',ip='192.0.2.11',snmp_version='2c',oid_bw='',oid_color='')

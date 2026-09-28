@@ -13,7 +13,7 @@
   <label>Responsável<input name="group_name" value="{{printer.group_name if printer else ''}}" maxlength="100"></label>
   <label>OID P&B<input name="oid_bw" value="{{printer.oid_bw if printer else ''}}" maxlength="100"></label>
   <label>OID cor<input name="oid_color" value="{{printer.oid_color if printer else ''}}" maxlength="100"></label>
-  <label>SNMP<select name="snmp_version"><option value="2c" {% if not printer or printer.snmp_version=='2c' %}selected{% endif %}>v2c</option><option value="3" {% if printer and printer.snmp_version=='3' %}selected{% endif %}>v3</option></select></label>
+  <label>SNMP<select name="snmp_version"><option value="1" {% if printer and printer.snmp_version=='1' %}selected{% endif %}>v1</option><option value="2c" {% if not printer or printer.snmp_version=='2c' %}selected{% endif %}>v2c</option><option value="3" {% if printer and printer.snmp_version=='3' %}selected{% endif %}>v3</option></select></label>
   <label>Tarifa P&B (R$)<input name="rate_bw" value="{{printer.rate_bw if printer else '0'}}" inputmode="decimal"></label>
   <label>Tarifa cor (R$)<input name="rate_color" value="{{printer.rate_color if printer else '0'}}" inputmode="decimal"></label>
   <label>Franquia P&B<input name="allowance_bw" type="number" min="0" value="{{printer.allowance_bw if printer else 0}}"></label>
