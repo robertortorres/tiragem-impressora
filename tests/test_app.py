@@ -3,9 +3,12 @@ import os
 import re
 import tempfile
 import unittest
+import io
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
+import pdfplumber
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -81,6 +84,26 @@ class Workflows(unittest.TestCase):
         self.assertEqual(export.status_code,200)
         self.assertIn('Impressora',export.text)
         self.assertEqual(self.client.get('/',params={**filters,'printer_id':'abc'}).status_code,400)
+    def test_pdf_report_uses_period_and_printer_filters(self):
+        self.login('consulta','viewer-password-for-tests')
+        with Session(engine) as db:
+            printer=db.query(Printer).filter_by(name='Boas Vindas').one()
+            printer_id=printer.id
+            if not db.query(Reading).filter_by(printer_id=printer_id,day=date(2026,9,25),kind='bw').first():
+                db.add_all([Reading(printer_id=printer_id,day=date(2026,9,25),kind='bw',counter=100,source='manual'),
+                            Reading(printer_id=printer_id,day=date(2026,9,26),kind='bw',counter=109,source='manual')])
+                db.commit()
+        params={'start':'2026-09-26','end':'2026-09-26','printer_id':str(printer_id)}
+        response=self.client.get('/export.pdf',params=params)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.headers['content-type'],'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF-'))
+        with pdfplumber.open(io.BytesIO(response.content)) as document:
+            content='\n'.join(page.extract_text() for page in document.pages)
+        self.assertIn('Boas Vindas',content)
+        self.assertIn('9 páginas',content)
+        self.assertNotIn('Faturamento',content)
+        self.assertEqual(self.client.get('/export.pdf',params={**params,'start':'2026-09-27'}).status_code,400)
     def test_snmp_v1_can_be_selected_and_used(self):
         token=self.login('admin','admin-password-for-tests')
         self.assertEqual(snmp_args('1','snmpget')[:3],['snmpget','-v','1'])
