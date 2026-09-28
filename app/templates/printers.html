@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% block content %}
 <h1>Impressoras</h1>
+{% if user.role=='admin' %}
 <div class="row" style="margin-bottom:18px">
   <a class="button-link" href="/printers/new">+ Cadastrar impressora</a>
   <form method="post" action="/collect"><input type="hidden" name="token" value="{{csrf}}"><button>Capturar todas agora</button></form>
@@ -8,17 +9,20 @@
 </div>
 {% if discovery.running %}<p class="muted">Buscando OIDs: {{discovery.processed}} de {{discovery.total}} impressoras processadas. <a href="/printers">Atualizar progresso</a></p>
 {% elif discovery.finished_at %}<p class="muted">Última busca concluída: {{discovery.processed}} de {{discovery.total}} impressoras processadas.</p>{% endif %}
+{% endif %}
 <section class="card">
-  <p class="muted">A coleta automática roda no intervalo definido em <a href="/settings">Configurações</a>. A captura manual não altera esse intervalo. A busca de OIDs preserva os valores preenchidos manualmente.</p>
-  <div class="scroll"><table class="printer-table"><thead><tr><th>Nome</th><th>Modelo</th><th>Série</th><th>IP</th><th>Proprietário</th><th>Responsável</th><th>Contador P&B</th><th>Contador cor</th><th>OID</th><th>Situação</th><th>Ações</th></tr></thead><tbody>
-  {% for p in printers %}{% set bw=latest.get((p.id,'bw')) %}{% set color=latest.get((p.id,'color')) %}<tr><td><strong>{{p.name}}</strong></td><td>{{p.model or '—'}}</td><td>{{p.serial or '—'}}</td><td><code>{{p.ip or '—'}}</code></td><td>{{p.owner or '—'}}</td><td>{{p.group_name or '—'}}</td><td>{% if bw %}<strong>{{bw.counter}}</strong><br><small>{{bw.day}} · {{bw.source}}</small>{% else %}—{% endif %}</td><td>{% if color %}<strong>{{color.counter}}</strong><br><small>{{color.day}} · {{color.source}}</small>{% else %}—{% endif %}</td><td title="{{p.discovery_note or ''}}">{{'Configurado' if p.oid_bw or p.oid_color else 'Revisar' if p.oid_candidate else 'Pendente'}}</td><td class="{{'good' if p.active else 'bad'}}">{{'Ativa' if p.active else 'Desativada'}}</td><td><div class="actions">
+  {% if user.role=='admin' %}<p class="muted">A coleta automática roda no intervalo definido em <a href="/settings">Configurações</a>. A captura manual não altera esse intervalo. A busca de OIDs preserva os valores preenchidos manualmente.</p>{% endif %}
+  <div class="scroll"><table class="printer-table"><thead><tr><th>Nome</th><th>Modelo</th><th>Série</th><th>IP</th><th>Proprietário</th><th>Responsável</th><th>Contador P&B</th><th>Contador cor</th><th>OID</th><th>Situação</th>{% if user.role=='admin' %}<th>Ações</th>{% endif %}</tr></thead><tbody>
+  {% for p in printers %}{% set bw=latest.get((p.id,'bw')) %}{% set color=latest.get((p.id,'color')) %}<tr><td><strong>{{p.name}}</strong></td><td>{{p.model or '—'}}</td><td>{{p.serial or '—'}}</td><td><code>{{p.ip or '—'}}</code></td><td>{{p.owner or '—'}}</td><td>{{p.group_name or '—'}}</td><td>{% if bw %}<strong>{{bw.counter}}</strong><br><small>{{bw.day}} · {{bw.source}}</small>{% else %}—{% endif %}</td><td>{% if color %}<strong>{{color.counter}}</strong><br><small>{{color.day}} · {{color.source}}</small>{% else %}—{% endif %}</td><td title="{{p.discovery_note or ''}}">{{'Configurado' if p.oid_bw or p.oid_color else 'Revisar' if p.oid_candidate else 'Pendente'}}</td><td class="{{'good' if p.active else 'bad'}}">{{'Ativa' if p.active else 'Desativada'}}</td>{% if user.role=='admin' %}<td><div class="actions">
     <a href="/printers/{{p.id}}/edit">Editar</a>
     <form method="post" action="/printers/{{p.id}}/collect"><input type="hidden" name="token" value="{{csrf}}"><button type="submit" {% if not p.active %}disabled{% endif %}>Capturar</button></form>
     <form method="post" action="/printers/{{p.id}}/status"><input type="hidden" name="token" value="{{csrf}}"><input type="hidden" name="active" value="{{0 if p.active else 1}}"><button type="submit">{{'Desativar' if p.active else 'Reativar'}}</button></form>
     <form method="post" action="/printers/{{p.id}}/delete" onsubmit="return confirm('Excluir definitivamente esta impressora? Só é permitido sem leituras registradas.')"><input type="hidden" name="token" value="{{csrf}}"><button class="danger" type="submit">Excluir</button></form>
-  </div></td></tr>{% endfor %}
+  </div></td>{% endif %}</tr>{% endfor %}
   </tbody></table></div>
 </section>
+{% if user.role=='admin' %}
 <details class="card"><summary>Importar histórico do LibreNMS</summary><p class="muted">CSV UTF-8 com data, série/hostname/IP e contadores acumulados P&B/cor. Leituras existentes não serão substituídas.</p><form class="row" method="post" action="/import/librenms" enctype="multipart/form-data"><input type="hidden" name="token" value="{{csrf}}"><label>CSV<input type="file" name="file" accept=".csv,text/csv" required></label><button>Importar</button></form></details>
 <details class="card"><summary>Inserir leitura de referência</summary><form class="row" method="post" action="/readings"><input type="hidden" name="token" value="{{csrf}}"><label>Impressora<select name="printer_id">{% for p in printers %}<option value="{{p.id}}">{{p.name}} · {{p.serial or 'sem série'}}</option>{% endfor %}</select></label><label>Data<input type="date" name="day" required></label><label>Tipo<select name="kind"><option value="bw">P&B</option><option value="color">Colorido</option></select></label><label>Contador<input type="number" name="counter" min="0" required></label><button>Salvar</button></form></details>
+{% endif %}
 {% endblock %}

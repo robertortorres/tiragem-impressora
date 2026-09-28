@@ -60,8 +60,16 @@ class Workflows(unittest.TestCase):
             self.assertIn('Conciliação financeira',response.text)
     def test_viewer_cannot_mutate(self):
         token=self.login('consulta','viewer-password-for-tests')
-        self.assertEqual(self.client.get('/printers').status_code,403)
+        listing=self.client.get('/printers')
+        self.assertEqual(listing.status_code,200)
+        self.assertIn('Contador P&B',listing.text)
+        self.assertIn('Boas Vindas',listing.text)
+        for action in ('Cadastrar impressora','Capturar todas agora','Buscar OIDs de todas','Editar','Desativar','Excluir','Inserir leitura de referência','Configurações e auditoria'):
+            self.assertNotIn(action,listing.text)
+        self.assertEqual(self.client.get('/printers/new').status_code,403)
+        self.assertEqual(self.client.get('/printers/1/edit').status_code,403)
         self.assertEqual(self.client.post('/printers',data={'name':'Bloqueada','token':token}).status_code,403)
+        self.assertEqual(self.client.post('/collect',data={'token':token}).status_code,403)
         self.assertEqual(self.client.get('/').status_code,200)
     def test_report_all_printers_with_empty_filter(self):
         self.login('admin','admin-password-for-tests')
