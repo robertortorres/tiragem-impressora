@@ -322,9 +322,16 @@ def series(db, start, end, printer_id=None, group=None):
             delta,state=usage(prev.counter,cur.counter,p.rollover)
             result.append({'printer':p.name,'serial':p.serial or '', 'group':p.group_name,'kind':cur.kind,'day':cur.day,'quantity':delta,'status':{'ok':'OK','reset':'Contador reiniciado','rollover':'Virada de contador'}[state],'gap':(cur.day-prev.day).days})
     return sorted(result,key=lambda x:(x['day'],x['printer']),reverse=True)
+def optional_printer_id(value:str|None):
+    if value is None or value=='':return None
+    try:printer_id=int(value)
+    except ValueError:raise HTTPException(400,'Impressora inválida')
+    if printer_id<=0:raise HTTPException(400,'Impressora inválida')
+    return printer_id
 @app.get('/',response_class=HTMLResponse)
-def home(request:Request, start:date|None=None,end:date|None=None,printer_id:int|None=None,group:str|None=None):
+def home(request:Request, start:date|None=None,end:date|None=None,printer_id:str|None=None,group:str|None=None):
     authorize(request)
+    printer_id=optional_printer_id(printer_id)
     end=end or date.today();start=start or end-timedelta(days=30)
     if start>end or (end-start).days>3660:raise HTTPException(400,'Período inválido')
     with Session(engine) as db:
@@ -346,8 +353,9 @@ def home(request:Request, start:date|None=None,end:date|None=None,printer_id:int
         events=db.execute(select(CollectionEvent,Printer).join(Printer).order_by(CollectionEvent.id.desc()).limit(40)).all()
         return page(request,'dashboard.html',printers=printers,groups=groups,rows=rows,start=start,end=end,printer_id=printer_id,group=group,metrics=[('Hoje',current,yesterday),('Últimos 7 dias',week,prior_week),('Mês atual',month,prior_month)],total=sum(r['quantity'] or 0 for r in rows),chart=chart,events=events)
 @app.get('/export.csv')
-def export(request:Request,start:date,end:date,printer_id:int|None=None,group:str|None=None):
+def export(request:Request,start:date,end:date,printer_id:str|None=None,group:str|None=None):
     authorize(request)
+    printer_id=optional_printer_id(printer_id)
     if start>end or (end-start).days>3660:raise HTTPException(400,'Período inválido')
     with Session(engine) as db:rows=series(db,start,end,printer_id,group)
     out=io.StringIO();writer=csv.writer(out);writer.writerow(['Data','Impressora','Série','Responsável','Tipo','Quantidade','Dias entre leituras','Status'])
