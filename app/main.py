@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, ForeignKey, Integer, String, Date, DateTim
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session
 from starlette.middleware.sessions import SessionMiddleware
 from app.logic import usage, month_bounds, money, parse_librenms_csv
+from app.pdf_report import build_report_pdf
 
 ROOT = Path(__file__).resolve().parent.parent
 engine = create_engine(os.environ['DATABASE_URL'], pool_pre_ping=True)
@@ -363,6 +364,19 @@ def export(request:Request,start:date,end:date,printer_id:str|None=None,group:st
     for r in rows:
         writer.writerow(["'"+str(r[k]) if isinstance(r[k],str) and r[k].startswith(('=','+','-','@')) else r[k] for k in ('day','printer','serial','group','kind','quantity','gap','status')])
     return StreamingResponse(iter([out.getvalue().encode('utf-8-sig')]),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="tiragem.csv"'})
+@app.get('/export.pdf')
+def export_pdf(request:Request,start:date,end:date,printer_id:str|None=None,group:str|None=None):
+    authorize(request)
+    printer_id=optional_printer_id(printer_id)
+    if start>end or (end-start).days>3660:raise HTTPException(400,'Período inválido')
+    with Session(engine) as db:
+        rows=series(db,start,end,printer_id,group)
+        printer=db.get(Printer,printer_id) if printer_id else None
+        if printer_id and not printer:raise HTTPException(404,'Impressora não encontrada')
+        printer_label=printer.name if printer else 'Todas'
+    pdf=build_report_pdf(rows,start,end,printer_label,group or 'Todos')
+    return StreamingResponse(iter([pdf]),media_type='application/pdf',headers={
+        'Content-Disposition':f'attachment; filename="tiragem-{start}-{end}.pdf"'})
 @app.get('/printers',response_class=HTMLResponse)
 def printers_page(request:Request):
     authorize(request)
