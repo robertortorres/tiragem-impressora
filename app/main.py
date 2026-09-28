@@ -365,7 +365,7 @@ def export(request:Request,start:date,end:date,printer_id:str|None=None,group:st
     return StreamingResponse(iter([out.getvalue().encode('utf-8-sig')]),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="tiragem.csv"'})
 @app.get('/printers',response_class=HTMLResponse)
 def printers_page(request:Request):
-    authorize(request,True)
+    authorize(request)
     with Session(engine) as db:
         printers=db.scalars(select(Printer).order_by(Printer.name)).all()
         ranked=select(Reading.id.label('id'),func.row_number().over(
