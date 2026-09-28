@@ -1,79 +1,21 @@
 {% extends 'base.html' %}
 {% block content %}
 <h1>Impressoras</h1>
-<p class="muted">Cadastre, corrija ou desative equipamentos. Impressoras desativadas continuam nos relatórios e deixam de ser coletadas.</p>
+<div class="row" style="margin-bottom:18px">
+  <a class="button-link" href="/printers/new">+ Cadastrar impressora</a>
+  <form method="post" action="/collect"><input type="hidden" name="token" value="{{csrf}}"><button>Capturar todas agora</button></form>
+</div>
 <section class="card">
-  <h2>Adicionar impressora</h2>
-  <form class="row" method="post" action="/printers">
-    <input type="hidden" name="token" value="{{csrf}}">
-    <label>Nome<input name="name" maxlength="160" required></label>
-    <label>Modelo<input name="model" maxlength="100"></label>
-    <label>Número de série<input name="serial" maxlength="80"></label>
-    <label>IP<input name="ip" placeholder="192.168.1.10"></label>
-    <label>Proprietário<input name="owner" maxlength="100"></label>
-    <label>Responsável<input name="group_name" maxlength="100"></label>
-    <label>OID P&B<input name="oid_bw" maxlength="100"></label>
-    <label>OID cor<input name="oid_color" maxlength="100"></label>
-    <label>SNMP<select name="snmp_version"><option value="2c">v2c</option><option value="3">v3</option></select></label>
-    <label>Tarifa P&B (R$)<input name="rate_bw" value="0" inputmode="decimal"></label>
-    <label>Tarifa cor (R$)<input name="rate_color" value="0" inputmode="decimal"></label>
-    <label>Franquia P&B<input name="allowance_bw" type="number" min="0" value="0"></label>
-    <label>Franquia cor<input name="allowance_color" type="number" min="0" value="0"></label>
-    <label>Limite contador (opcional)<input name="rollover" type="number" min="2"></label>
-    <button>Adicionar</button>
-  </form>
+  <p class="muted">A coleta automática roda no intervalo definido em <a href="/settings">Configurações</a>. A captura manual não altera esse intervalo. Impressoras desativadas preservam o histórico.</p>
+  <div class="scroll"><table class="printer-table"><thead><tr><th>Nome</th><th>Modelo</th><th>Série</th><th>IP</th><th>Proprietário</th><th>Responsável</th><th>Situação</th><th>Ações</th></tr></thead><tbody>
+  {% for p in printers %}<tr><td><strong>{{p.name}}</strong></td><td>{{p.model or '—'}}</td><td>{{p.serial or '—'}}</td><td><code>{{p.ip or '—'}}</code></td><td>{{p.owner or '—'}}</td><td>{{p.group_name or '—'}}</td><td class="{{'good' if p.active else 'bad'}}">{{'Ativa' if p.active else 'Desativada'}}</td><td><div class="actions">
+    <a href="/printers/{{p.id}}/edit">Editar</a>
+    <form method="post" action="/printers/{{p.id}}/collect"><input type="hidden" name="token" value="{{csrf}}"><button type="submit" {% if not p.active %}disabled{% endif %}>Capturar</button></form>
+    <form method="post" action="/printers/{{p.id}}/status"><input type="hidden" name="token" value="{{csrf}}"><input type="hidden" name="active" value="{{0 if p.active else 1}}"><button type="submit">{{'Desativar' if p.active else 'Reativar'}}</button></form>
+    <form method="post" action="/printers/{{p.id}}/delete" onsubmit="return confirm('Excluir definitivamente esta impressora? Só é permitido sem leituras registradas.')"><input type="hidden" name="token" value="{{csrf}}"><button class="danger" type="submit">Excluir</button></form>
+  </div></td></tr>{% endfor %}
+  </tbody></table></div>
 </section>
-<section class="card"><h2>Importar histórico do LibreNMS</h2>
-  <p class="muted">CSV UTF-8: date, serial (ou hostname/ip), bw e color com contadores acumulados. Aceita também kind + counter. Nenhuma leitura existente será sobrescrita.</p>
-  <form class="row" method="post" action="/import/librenms" enctype="multipart/form-data"><input type="hidden" name="token" value="{{csrf}}"><label>Arquivo CSV<input type="file" name="file" accept=".csv,text/csv" required></label><button>Importar histórico</button></form>
-</section>
-<section class="card">
-  <h2>Coleta e leitura inicial</h2>
-  <p class="muted">Confirme IPs, séries e OIDs antes de iniciar a coleta. Endereços originais com formato inválido não foram ativados.</p>
-  <form method="post" action="/collect"><input type="hidden" name="token" value="{{csrf}}"><button>Coletar agora</button></form>
-  <h2>Inserir leitura de referência</h2>
-  <form class="row" method="post" action="/readings">
-    <input type="hidden" name="token" value="{{csrf}}">
-    <label>Impressora<select name="printer_id">{% for p in printers %}<option value="{{p.id}}">{{p.name}} · {{p.serial or 'sem série'}}</option>{% endfor %}</select></label>
-    <label>Data<input type="date" name="day" required></label>
-    <label>Tipo<select name="kind"><option value="bw">P&B</option><option value="color">Colorido</option></select></label>
-    <label>Contador acumulado<input type="number" name="counter" min="0" required></label>
-    <button>Salvar leitura</button>
-  </form>
-</section>
-{% for p in printers %}
-<section class="card">
-  <h2>{{p.name}} · {{p.model}} <small class="{{'good' if p.active else 'bad'}}">{{'Ativa' if p.active else 'Desativada'}}</small></h2>
-  <p class="muted">IP na planilha: {{p.raw_ip or '—'}} · Proprietário: {{p.owner or '—'}}</p>
-  <form class="row" method="post" action="/printers/{{p.id}}">
-    <input type="hidden" name="token" value="{{csrf}}">
-    <label>Nome<input name="name" value="{{p.name}}" maxlength="160" required></label>
-    <label>Modelo<input name="model" value="{{p.model}}" maxlength="100"></label>
-    <label>Série<input name="serial" value="{{p.serial or ''}}" maxlength="80"></label>
-    <label>IP<input name="ip" value="{{p.ip}}" placeholder="192.168.1.10"></label>
-    <label>Proprietário<input name="owner" value="{{p.owner}}" maxlength="100"></label>
-    <label>Responsável<input name="group_name" value="{{p.group_name}}" maxlength="100"></label>
-    <label>OID P&B<input name="oid_bw" value="{{p.oid_bw}}" maxlength="100"></label>
-    <label>OID cor<input name="oid_color" value="{{p.oid_color}}" maxlength="100"></label>
-    <label>SNMP<select name="snmp_version"><option value="2c" {% if p.snmp_version=='2c' %}selected{% endif %}>v2c</option><option value="3" {% if p.snmp_version=='3' %}selected{% endif %}>v3</option></select></label>
-    <label>Tarifa P&B (R$)<input name="rate_bw" value="{{p.rate_bw}}" inputmode="decimal"></label>
-    <label>Tarifa cor (R$)<input name="rate_color" value="{{p.rate_color}}" inputmode="decimal"></label>
-    <label>Franquia P&B<input name="allowance_bw" type="number" min="0" value="{{p.allowance_bw}}"></label>
-    <label>Franquia cor<input name="allowance_color" type="number" min="0" value="{{p.allowance_color}}"></label>
-    <label>Limite contador (opcional)<input name="rollover" type="number" min="2" value="{{p.rollover or ''}}"></label>
-    <button>Salvar alterações</button>
-  </form>
-  <div class="row" style="margin-top:16px">
-    <form method="post" action="/printers/{{p.id}}/status">
-      <input type="hidden" name="token" value="{{csrf}}">
-      <input type="hidden" name="active" value="{{0 if p.active else 1}}">
-      <button>{{'Desativar' if p.active else 'Reativar'}}</button>
-    </form>
-    <form method="post" action="/printers/{{p.id}}/delete" onsubmit="return confirm('Excluir definitivamente esta impressora? A exclusão só é possível sem leituras registradas.')">
-      <input type="hidden" name="token" value="{{csrf}}">
-      <button style="background:#a63838;border-color:#a63838">Excluir sem histórico</button>
-    </form>
-  </div>
-</section>
-{% endfor %}
+<details class="card"><summary>Importar histórico do LibreNMS</summary><p class="muted">CSV UTF-8 com data, série/hostname/IP e contadores acumulados P&B/cor. Leituras existentes não serão substituídas.</p><form class="row" method="post" action="/import/librenms" enctype="multipart/form-data"><input type="hidden" name="token" value="{{csrf}}"><label>CSV<input type="file" name="file" accept=".csv,text/csv" required></label><button>Importar</button></form></details>
+<details class="card"><summary>Inserir leitura de referência</summary><form class="row" method="post" action="/readings"><input type="hidden" name="token" value="{{csrf}}"><label>Impressora<select name="printer_id">{% for p in printers %}<option value="{{p.id}}">{{p.name}} · {{p.serial or 'sem série'}}</option>{% endfor %}</select></label><label>Data<input type="date" name="day" required></label><label>Tipo<select name="kind"><option value="bw">P&B</option><option value="color">Colorido</option></select></label><label>Contador<input type="number" name="counter" min="0" required></label><button>Salvar</button></form></details>
 {% endblock %}

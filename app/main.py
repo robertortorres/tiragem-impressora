@@ -16,6 +16,7 @@ from app.logic import usage, month_bounds, money, parse_librenms_csv
 
 ROOT = Path(__file__).resolve().parent.parent
 engine = create_engine(os.environ['DATABASE_URL'], pool_pre_ping=True)
+collection_lock=asyncio.Lock()
 class Base(DeclarativeBase): pass
 class Printer(Base):
     __tablename__='printers'
@@ -36,6 +37,8 @@ class Printer(Base):
     allowance_bw: Mapped[int]=mapped_column(Integer,default=0)
     allowance_color: Mapped[int]=mapped_column(Integer,default=0)
     rollover: Mapped[int | None]=mapped_column(Integer,nullable=True)
+    oid_candidate: Mapped[str]=mapped_column(String(100),default='')
+    discovery_note: Mapped[str]=mapped_column(String(200),default='')
 class Reading(Base):
     __tablename__='readings'
     __table_args__=(UniqueConstraint('printer_id','day','kind'),)
@@ -46,6 +49,14 @@ class Reading(Base):
     counter: Mapped[int]=mapped_column(Integer)
     source: Mapped[str]=mapped_column(String(30))
     printer: Mapped[Printer]=relationship()
+class PollSample(Base):
+    __tablename__='poll_samples'
+    id: Mapped[int]=mapped_column(primary_key=True)
+    printer_id: Mapped[int]=mapped_column(ForeignKey('printers.id'))
+    at: Mapped[datetime]=mapped_column(DateTime(timezone=True))
+    kind: Mapped[str]=mapped_column(String(10))
+    counter: Mapped[int]=mapped_column(Integer)
+    source: Mapped[str]=mapped_column(String(30))
 class User(Base):
     __tablename__='users'
     id: Mapped[int]=mapped_column(primary_key=True)
@@ -92,6 +103,11 @@ class BillingConfig(Base):
     id: Mapped[int]=mapped_column(primary_key=True)
     fixed_fee: Mapped[Decimal]=mapped_column(Numeric(12,2),default=Decimal('0'))
     jump_limit: Mapped[int]=mapped_column(Integer,default=2000)
+    collection_interval_hours: Mapped[int]=mapped_column(Integer,default=24)
+class CollectionState(Base):
+    __tablename__='collection_state'
+    id: Mapped[int]=mapped_column(primary_key=True)
+    last_run_at: Mapped[datetime | None]=mapped_column(DateTime(timezone=True),nullable=True)
 class InvoiceSummary(Base):
     __tablename__='invoice_summary'
     invoice_id: Mapped[int]=mapped_column(ForeignKey('invoices.id'),primary_key=True)
@@ -128,13 +144,20 @@ def seed():
             'rate_color':'NUMERIC(12,4) NOT NULL DEFAULT 0',
             'allowance_bw':'INTEGER NOT NULL DEFAULT 0',
             'allowance_color':'INTEGER NOT NULL DEFAULT 0',
-            'rollover':'INTEGER'
+            'rollover':'INTEGER',
+            'oid_candidate':"VARCHAR(100) NOT NULL DEFAULT ''",
+            'discovery_note':"VARCHAR(200) NOT NULL DEFAULT ''"
         }.items():
             if engine.dialect.name!='sqlite' or column not in existing:
                 condition='IF NOT EXISTS ' if engine.dialect.name=='postgresql' else ''
                 connection.execute(text(f'ALTER TABLE printers ADD COLUMN {condition}{column} {definition}'))
+        if engine.dialect.name=='postgresql':
+            connection.execute(text('ALTER TABLE billing_config ADD COLUMN IF NOT EXISTS collection_interval_hours INTEGER NOT NULL DEFAULT 24'))
+        elif 'collection_interval_hours' not in {row[1] for row in connection.execute(text('PRAGMA table_info(billing_config)'))}:
+            connection.execute(text('ALTER TABLE billing_config ADD COLUMN collection_interval_hours INTEGER NOT NULL DEFAULT 24'))
     with Session(engine) as db:
         if not db.get(BillingConfig,1):db.add(BillingConfig(id=1))
+        if not db.get(CollectionState,1):db.add(CollectionState(id=1))
         first_run = not db.scalar(select(func.count(User.id)))
         for name,role,var in [('admin','admin','ADMIN_PASSWORD'),('consulta','viewer','VIEWER_PASSWORD')]:
             if not db.scalar(select(User).where(User.username==name)):
@@ -143,23 +166,60 @@ def seed():
             for row in json.loads((ROOT/'data/inventory.json').read_text()):
                 db.add(Printer(**{k:v for k,v in row.items() if k in ('name','serial','model','ip','raw_ip','owner','group_name') and (k!='serial' or v)}))
         db.commit()
+MARKER_BASE='1.3.6.1.2.1.43.10.2.1'
+def snmp_args(version,command):
+    if version=='3':
+        username=os.environ.get('SNMPV3_USER');auth=os.environ.get('SNMPV3_AUTH_PASSWORD');privacy=os.environ.get('SNMPV3_PRIV_PASSWORD')
+        if not all((username,auth,privacy)):return None
+        return [command,'-v','3','-l','authPriv','-u',username,'-a','SHA','-A',auth,'-x','AES','-X',privacy]
+    return [command,'-v','2c','-c',os.environ.get('SNMP_COMMUNITY','public')]
 def snmp(ip,oid,version='2c'):
     if not ip or not VALID_OID.fullmatch(oid):return None
     try:
-        if version=='3':
-            username=os.environ.get('SNMPV3_USER');auth=os.environ.get('SNMPV3_AUTH_PASSWORD');privacy=os.environ.get('SNMPV3_PRIV_PASSWORD')
-            if not all((username,auth,privacy)):return None
-            args=['snmpget','-v','3','-l','authPriv','-u',username,'-a','SHA','-A',auth,'-x','AES','-X',privacy]
-        else:args=['snmpget','-v','2c','-c',os.environ.get('SNMP_COMMUNITY','public')]
+        args=snmp_args(version,'snmpget')
+        if args is None:return None
         p=subprocess.run(args+['-Oqv','-t','2','-r','0',ip,oid],capture_output=True,text=True,timeout=5)
         m=re.search(r'(?:Counter32:|Counter64:|INTEGER:)?\s*(\d+)\s*$',p.stdout.strip())
         return int(m.group(1)) if p.returncode==0 and m else None
     except (subprocess.TimeoutExpired,OSError):return None
-def collect():
+def marker_values(ip,version,column):
+    args=snmp_args(version,'snmpwalk')
+    if args is None:return {}
+    try:
+        p=subprocess.run(args+['-On','-t','2','-r','0',ip,f'{MARKER_BASE}.{column}'],capture_output=True,text=True,timeout=6)
+    except (subprocess.TimeoutExpired,OSError):return {}
+    if p.returncode:return {}
+    values={}
+    pattern=re.compile(r'^\.?'+re.escape(MARKER_BASE)+r'\.'+str(column)+r'\.(\d+\.\d+)\s*=\s*(?:Counter32|Counter64|INTEGER):\s*(\d+)\s*$')
+    for line in p.stdout.splitlines():
+        m=pattern.match(line.strip())
+        if m:values[m.group(1)]=int(m.group(2))
+    return values
+def discover_oid(printer,replace=False):
+    """Only map an impressions counter to B&W for a verified mono model."""
+    if not printer.ip:
+        printer.discovery_note='Informe um IP válido para descobrir os contadores.';return
+    counts=marker_values(printer.ip,printer.snmp_version,4)
+    units=marker_values(printer.ip,printer.snmp_version,3)
+    colors=marker_values(printer.ip,printer.snmp_version,6)
+    candidates=[suffix for suffix in counts if units.get(suffix)==7]
+    printer.oid_candidate=f'{MARKER_BASE}.4.{candidates[0]}' if len(candidates)==1 else ''
+    if not counts:
+        printer.discovery_note='Sem resposta SNMP ou sem acesso ao contador padrão.'
+    elif len(candidates)!=1:
+        printer.discovery_note='Contadores ausentes ou ambíguos; confira os OIDs manualmente.'
+    elif re.match(r'^WF-M\d+',printer.model.upper().replace(' ','')) and colors.get(candidates[0])==1:
+        if replace or not printer.oid_bw:printer.oid_bw=printer.oid_candidate
+        printer.discovery_note=f'P&B detectado; {counts[candidates[0]]} impressões (confira no painel).'
+    else:
+        printer.discovery_note='Contador total localizado. Separação P&B/cor precisa de confirmação manual.'
+def collect(printer_id=None,scheduled=False):
     today=date.today()
     with Session(engine) as db:
         conf=db.get(BillingConfig,1)
-        for p in db.scalars(select(Printer).where(Printer.active==1)).all():
+        query=select(Printer).where(Printer.active==1)
+        if printer_id is not None:query=query.where(Printer.id==printer_id)
+        for p in db.scalars(query).all():
             for kind,oid in [('bw',p.oid_bw),('color',p.oid_color)]:
                 if not oid or not p.ip:continue
                 val=snmp(p.ip,oid,p.snmp_version)
@@ -176,14 +236,22 @@ def collect():
                     if (today-prev.day).days>1:event(db,p,today,kind,'missing_days',f'{(today-prev.day).days-1} dia(s) sem leitura')
                 if item:item.counter=val;item.source='snmp'
                 else:db.add(Reading(printer_id=p.id,day=today,kind=kind,counter=val,source='snmp'))
+                db.add(PollSample(printer_id=p.id,at=datetime.now(timezone.utc),kind=kind,counter=val,source='scheduled' if scheduled else 'manual'))
+        if scheduled:db.get(CollectionState,1).last_run_at=datetime.now(timezone.utc)
         db.commit()
 async def scheduler():
     while True:
-        now=datetime.now(timezone.utc)
-        target=now.replace(hour=int(os.environ.get('COLLECTION_HOUR_UTC','12'))%24,minute=0,second=0,microsecond=0)
-        if target<=now:target+=timedelta(days=1)
-        await asyncio.sleep((target-now).total_seconds())
-        await asyncio.to_thread(collect)
+        try:
+            with Session(engine) as db:
+                interval=db.get(BillingConfig,1).collection_interval_hours
+                last=db.get(CollectionState,1).last_run_at
+            if last is None or datetime.now(timezone.utc)-last.replace(tzinfo=timezone.utc if last.tzinfo is None else last.tzinfo)>=timedelta(hours=interval):
+                async with collection_lock:
+                    await asyncio.to_thread(collect,scheduled=True)
+        except Exception:
+            import logging
+            logging.exception('Falha na coleta agendada')
+        await asyncio.sleep(60)
 @asynccontextmanager
 async def lifespan(app):
     seed();task=asyncio.create_task(scheduler())
@@ -256,6 +324,17 @@ def export(request:Request,start:date,end:date,printer_id:int|None=None,group:st
 def printers_page(request:Request):
     authorize(request,True)
     with Session(engine) as db:return page(request,'printers.html',printers=db.scalars(select(Printer).order_by(Printer.name)).all())
+@app.get('/printers/new',response_class=HTMLResponse)
+def new_printer_page(request:Request):
+    authorize(request,True)
+    return page(request,'printer_form.html',printer=None)
+@app.get('/printers/{printer_id}/edit',response_class=HTMLResponse)
+def edit_printer_page(request:Request,printer_id:int):
+    authorize(request,True)
+    with Session(engine) as db:
+        printer=db.get(Printer,printer_id)
+        if not printer:raise HTTPException(404)
+        return page(request,'printer_form.html',printer=printer)
 def printer_fields(db, name, serial, model, ip, owner, group_name, oid_bw, oid_color, snmp_version, rate_bw, rate_color, allowance_bw, allowance_color, rollover, exclude_id=None):
     import ipaddress
     rollover = rollover.strip()
@@ -289,10 +368,13 @@ def add_printer(request:Request,name:str=Form(),serial:str=Form(''),model:str=Fo
     authorize(request,True);csrf(request,token)
     with Session(engine) as db:
         values=printer_fields(db,name,serial,model,ip,owner,group_name,oid_bw,oid_color,snmp_version,rate_bw,rate_color,allowance_bw,allowance_color,rollover)
-        db.add(Printer(**values,raw_ip=values['ip']))
+        printer=Printer(**values,raw_ip=values['ip'])
+        discover_oid(printer)
+        db.add(printer);db.flush()
         audit(db,request,'printer.create',f'{name} / {serial}')
         db.commit()
-    return redirect('/printers')
+        printer_id=printer.id
+    return redirect(f'/printers/{printer_id}/edit')
 @app.post('/printers/{printer_id}')
 def edit_printer(request:Request,printer_id:int,name:str=Form(),serial:str=Form(''),model:str=Form(''),ip:str=Form(''),owner:str=Form(''),group_name:str=Form(''),oid_bw:str=Form(''),oid_color:str=Form(''),snmp_version:str=Form('2c'),rate_bw:str=Form('0'),rate_color:str=Form('0'),allowance_bw:int=Form(0),allowance_color:int=Form(0),rollover:str=Form(''),token:str=Form()):
     authorize(request,True);csrf(request,token)
@@ -305,6 +387,16 @@ def edit_printer(request:Request,printer_id:int,name:str=Form(),serial:str=Form(
         audit(db,request,'printer.edit',json.dumps({'id':p.id,'before':before,'after':{k:str(v) for k,v in values.items()}},ensure_ascii=False))
         db.commit()
     return redirect('/printers')
+@app.post('/printers/{printer_id}/discover')
+def discover_printer(request:Request,printer_id:int,token:str=Form()):
+    authorize(request,True);csrf(request,token)
+    with Session(engine) as db:
+        printer=db.get(Printer,printer_id)
+        if not printer:raise HTTPException(404)
+        discover_oid(printer)
+        audit(db,request,'printer.discover',f'id={printer.id}: {printer.discovery_note}')
+        db.commit()
+    return redirect(f'/printers/{printer_id}/edit')
 @app.post('/printers/{printer_id}/status')
 def printer_status(request:Request,printer_id:int,active:int=Form(),token:str=Form()):
     authorize(request,True);csrf(request,token)
@@ -374,7 +466,16 @@ async def import_librenms(request:Request,file:UploadFile=File(),token:str=Form(
 @app.post('/collect')
 async def collect_now(request:Request,token:str=Form()):
     authorize(request,True);csrf(request,token)
-    await asyncio.to_thread(collect)
+    async with collection_lock:
+        await asyncio.to_thread(collect)
+    return redirect('/printers')
+@app.post('/printers/{printer_id}/collect')
+async def collect_printer_now(request:Request,printer_id:int,token:str=Form()):
+    authorize(request,True);csrf(request,token)
+    with Session(engine) as db:
+        if not db.get(Printer,printer_id):raise HTTPException(404)
+    async with collection_lock:
+        await asyncio.to_thread(collect,printer_id)
     return redirect('/printers')
 # Parse the supplier's text PDF. Reject unrecognized layouts instead of inventing values.
 LINE=re.compile(r'^\s*(.+?)\s+(\S+)\s+([A-Z0-9]{7,})\s+(\d+)\s+(\d{2}/\d{2}/\d{4})\s+(?:(\d+)\s+(\d{2}/\d{2}/\d{4})\s+)?(\d+)\s+([\d.,]+)\s*$')
@@ -459,15 +560,15 @@ def settings_page(request:Request):
     with Session(engine) as db:
         return page(request,'settings.html',config=db.get(BillingConfig,1),audits=db.scalars(select(Audit).order_by(Audit.id.desc()).limit(100)).all())
 @app.post('/settings')
-def settings_update(request:Request,fixed_fee:str=Form(),jump_limit:int=Form(),token:str=Form()):
+def settings_update(request:Request,fixed_fee:str=Form(),jump_limit:int=Form(),collection_interval_hours:int=Form(24),token:str=Form()):
     authorize(request,True);csrf(request,token)
     try:fee=money(fixed_fee)
     except ValueError as exc:raise HTTPException(400,str(exc))
-    if fee<0 or jump_limit<1:raise HTTPException(400,'Valor inválido')
+    if fee<0 or jump_limit<1 or not 1<=collection_interval_hours<=168:raise HTTPException(400,'Intervalo deve ficar entre 1 e 168 horas')
     with Session(engine) as db:
         config=db.get(BillingConfig,1)
-        audit(db,request,'billing.settings',f'fixed_fee={config.fixed_fee}->{fee}, jump_limit={config.jump_limit}->{jump_limit}')
-        config.fixed_fee=fee;config.jump_limit=jump_limit;db.commit()
+        audit(db,request,'billing.settings',f'fixed_fee={config.fixed_fee}->{fee}, jump_limit={config.jump_limit}->{jump_limit}, intervalo={config.collection_interval_hours}->{collection_interval_hours}h')
+        config.fixed_fee=fee;config.jump_limit=jump_limit;config.collection_interval_hours=collection_interval_hours;db.commit()
     return redirect('/settings')
 @app.get('/invoices/{iid}/pdf')
 def invoice_file(request:Request,iid:int):
