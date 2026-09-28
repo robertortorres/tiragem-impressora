@@ -14,7 +14,7 @@ os.environ['DATABASE_URL']='sqlite:///'+str(Path(_dir.name)/'app.db')
 os.environ['SESSION_SECRET']='integration-test-secret'
 os.environ['ADMIN_PASSWORD']='admin-password-for-tests'
 os.environ['VIEWER_PASSWORD']='viewer-password-for-tests'
-from app.main import app,engine,Printer,Reading,PollSample,BillingConfig,discover_oid
+from app.main import app,engine,Printer,Reading,PollSample,BillingConfig,DiscoveryRun,discover_oid
 
 class Workflows(unittest.TestCase):
     @classmethod
@@ -73,6 +73,21 @@ class Workflows(unittest.TestCase):
         self.assertEqual(color.oid_bw,'')
         self.assertEqual(color.oid_color,'')
         self.assertTrue(color.oid_candidate)
+    def test_existing_printers_discovery_preserves_manual_oids(self):
+        token=self.login('admin','admin-password-for-tests')
+        with Session(engine) as db:
+            mono=Printer(name='Existing mono',model='WF-M5799',ip='192.0.2.90',snmp_version='2c',oid_bw='',oid_color='')
+            color=Printer(name='Existing color',model='WF-C5890',ip='192.0.2.91',snmp_version='2c',oid_bw='1.2.3.4',oid_color='')
+            db.add_all([mono,color]);db.commit()
+            mono_id,color_id=mono.id,color.id
+        with patch('app.main.marker_values',side_effect=lambda ip,version,column:{'1.1':{4:23777,3:7,6:1}[column]}):
+            response=self.client.post('/printers/discover-all',data={'token':token})
+        self.assertEqual(response.status_code,200)
+        with Session(engine) as db:
+            self.assertEqual(db.get(Printer,mono_id).oid_bw,'1.3.6.1.2.1.43.10.2.1.4.1.1')
+            self.assertEqual(db.get(Printer,color_id).oid_bw,'1.2.3.4')
+            self.assertTrue(db.get(Printer,color_id).oid_candidate)
+            self.assertEqual(db.get(DiscoveryRun,1).running,0)
     def test_manual_collection_preserves_hourly_samples(self):
         token=self.login('admin','admin-password-for-tests')
         with patch('app.main.marker_values',return_value={}):

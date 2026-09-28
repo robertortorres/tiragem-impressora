@@ -5,7 +5,7 @@ from pathlib import Path
 from decimal import Decimal
 
 import pdfplumber
-from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException
+from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from passlib.hash import bcrypt
@@ -108,6 +108,13 @@ class CollectionState(Base):
     __tablename__='collection_state'
     id: Mapped[int]=mapped_column(primary_key=True)
     last_run_at: Mapped[datetime | None]=mapped_column(DateTime(timezone=True),nullable=True)
+class DiscoveryRun(Base):
+    __tablename__='discovery_run'
+    id: Mapped[int]=mapped_column(primary_key=True)
+    running: Mapped[int]=mapped_column(Integer,default=0)
+    processed: Mapped[int]=mapped_column(Integer,default=0)
+    total: Mapped[int]=mapped_column(Integer,default=0)
+    finished_at: Mapped[datetime | None]=mapped_column(DateTime(timezone=True),nullable=True)
 class InvoiceSummary(Base):
     __tablename__='invoice_summary'
     invoice_id: Mapped[int]=mapped_column(ForeignKey('invoices.id'),primary_key=True)
@@ -158,6 +165,9 @@ def seed():
     with Session(engine) as db:
         if not db.get(BillingConfig,1):db.add(BillingConfig(id=1))
         if not db.get(CollectionState,1):db.add(CollectionState(id=1))
+        run=db.get(DiscoveryRun,1)
+        if not run:db.add(DiscoveryRun(id=1))
+        elif run.running:run.running=0
         first_run = not db.scalar(select(func.count(User.id)))
         for name,role,var in [('admin','admin','ADMIN_PASSWORD'),('consulta','viewer','VIEWER_PASSWORD')]:
             if not db.scalar(select(User).where(User.username==name)):
@@ -213,6 +223,30 @@ def discover_oid(printer,replace=False):
         printer.discovery_note=f'P&B detectado; {counts[candidates[0]]} impressões (confira no painel).'
     else:
         printer.discovery_note='Contador total localizado. Separação P&B/cor precisa de confirmação manual.'
+def discover_all_existing():
+    with Session(engine) as db:
+        ids=db.scalars(select(Printer.id).where(Printer.ip!='').order_by(Printer.id)).all()
+        run=db.get(DiscoveryRun,1)
+        run.total=len(ids)
+        db.commit()
+    try:
+        for printer_id in ids:
+            with Session(engine) as db:
+                printer=db.get(Printer,printer_id)
+                if printer:
+                    try:discover_oid(printer)
+                    except Exception:
+                        import logging
+                        logging.exception('Falha na descoberta SNMP da impressora %s',printer_id)
+                        printer.discovery_note='Erro na descoberta SNMP; revise a conectividade.'
+                db.get(DiscoveryRun,1).processed+=1
+                db.commit()
+    finally:
+        with Session(engine) as db:
+            run=db.get(DiscoveryRun,1)
+            run.running=0
+            run.finished_at=datetime.now(timezone.utc)
+            db.commit()
 def collect(printer_id=None,scheduled=False):
     today=date.today()
     with Session(engine) as db:
@@ -323,7 +357,18 @@ def export(request:Request,start:date,end:date,printer_id:int|None=None,group:st
 @app.get('/printers',response_class=HTMLResponse)
 def printers_page(request:Request):
     authorize(request,True)
-    with Session(engine) as db:return page(request,'printers.html',printers=db.scalars(select(Printer).order_by(Printer.name)).all())
+    with Session(engine) as db:return page(request,'printers.html',printers=db.scalars(select(Printer).order_by(Printer.name)).all(),discovery=db.get(DiscoveryRun,1))
+@app.post('/printers/discover-all')
+def discover_all(request:Request,background_tasks:BackgroundTasks,token:str=Form()):
+    authorize(request,True);csrf(request,token)
+    with Session(engine) as db:
+        run=db.get(DiscoveryRun,1)
+        if run.running:return redirect('/printers')
+        run.running=1;run.processed=0;run.total=0;run.finished_at=None
+        audit(db,request,'printer.discover_all','Descoberta SNMP em lote iniciada')
+        db.commit()
+    background_tasks.add_task(discover_all_existing)
+    return redirect('/printers')
 @app.get('/printers/new',response_class=HTMLResponse)
 def new_printer_page(request:Request):
     authorize(request,True)
