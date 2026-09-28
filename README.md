@@ -15,7 +15,7 @@ A página **Impressoras** mostra uma tabela com nome, modelo, série, IP, propri
 
 No cadastro, o app consulta a Printer MIB da impressora. Para impressoras já cadastradas, o administrador pode usar **Buscar OIDs de todas** na lista; a busca roda em segundo plano e mostra o progresso após atualizar a página. Também há **Buscar OIDs novamente** na edição. Somente para um modelo Epson `WF-M` monocromático, com um único contador em unidade de impressões e um colorante, ele preenche automaticamente o OID P&B. Para modelos coloridos, o OID total é exibido como candidato; configure os contadores separados depois de conferir painel, fabricante e cobrança. Não há dedução confiável de P&B/cor a partir de um contador genérico. Uma falha SNMP não bloqueia o cadastro nem a busca das demais impressoras. Valores inseridos manualmente são preservados.
 
-As impressoras recebem SNMP v2c por padrão, usando `SNMP_COMMUNITY`. Para v3, use as variáveis `SNMPV3_USER`, `SNMPV3_AUTH_PASSWORD` e `SNMPV3_PRIV_PASSWORD` e selecione v3 no cadastro. Configure uma comunidade/usuário de leitura com acesso restrito. Docker precisa alcançar o endereço da impressora.
+As impressoras recebem SNMP v2c por padrão, usando `SNMP_COMMUNITY`. Para impressoras que respondem apenas em SNMPv1, selecione v1 na edição; v1 usa a mesma comunidade configurada para v2c. Para v3, use as variáveis `SNMPV3_USER`, `SNMPV3_AUTH_PASSWORD` e `SNMPV3_PRIV_PASSWORD` e selecione v3 no cadastro. Configure uma comunidade/usuário de leitura com acesso restrito. Docker precisa alcançar o endereço da impressora. Antes de associar um contador SNMP à cobrança, confira se ele corresponde ao contador exibido e faturado.
 
 ## Coleta e relatórios
 
