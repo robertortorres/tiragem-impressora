@@ -112,6 +112,10 @@ class Workflows(unittest.TestCase):
         with Session(engine) as db:
             self.assertEqual(db.query(PollSample).filter_by(printer_id=pid).count(),2)
             self.assertEqual(db.query(Reading).filter_by(printer_id=pid).one().counter,55)
+        listing=self.client.get('/printers')
+        self.assertEqual(listing.status_code,200)
+        self.assertIn('Contador P&B',listing.text)
+        self.assertIn('<strong>55</strong>',listing.text)
         response=self.client.post('/settings',data={'fixed_fee':'0','jump_limit':'2000','collection_interval_hours':'6','token':token})
         self.assertEqual(response.status_code,200)
         with Session(engine) as db:self.assertEqual(db.get(BillingConfig,1).collection_interval_hours,6)

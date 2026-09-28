@@ -365,7 +365,14 @@ def export(request:Request,start:date,end:date,printer_id:str|None=None,group:st
 @app.get('/printers',response_class=HTMLResponse)
 def printers_page(request:Request):
     authorize(request,True)
-    with Session(engine) as db:return page(request,'printers.html',printers=db.scalars(select(Printer).order_by(Printer.name)).all(),discovery=db.get(DiscoveryRun,1))
+    with Session(engine) as db:
+        printers=db.scalars(select(Printer).order_by(Printer.name)).all()
+        ranked=select(Reading.id.label('id'),func.row_number().over(
+            partition_by=(Reading.printer_id,Reading.kind),
+            order_by=(Reading.day.desc(),Reading.id.desc())).label('rank')).subquery()
+        latest={(reading.printer_id,reading.kind):reading for reading in db.scalars(
+            select(Reading).join(ranked,Reading.id==ranked.c.id).where(ranked.c.rank==1))}
+        return page(request,'printers.html',printers=printers,latest=latest,discovery=db.get(DiscoveryRun,1))
 @app.post('/printers/discover-all')
 def discover_all(request:Request,background_tasks:BackgroundTasks,token:str=Form()):
     authorize(request,True);csrf(request,token)
