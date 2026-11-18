@@ -14,6 +14,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 from starlette.middleware.sessions import SessionMiddleware
 from app.logic import usage, month_bounds, money, parse_librenms_csv
 from app.pdf_report import build_report_pdf
+from app.netid import snmp_args, fingerprint, arp_hints, sweep, normalize_mac, serial_matches, parse_subnets
 
 ROOT = Path(__file__).resolve().parent.parent
 engine = create_engine(os.environ['DATABASE_URL'], pool_pre_ping=True)
@@ -40,6 +41,17 @@ class Printer(Base):
     rollover: Mapped[int | None]=mapped_column(Integer,nullable=True)
     oid_candidate: Mapped[str]=mapped_column(String(100),default='')
     discovery_note: Mapped[str]=mapped_column(String(200),default='')
+    mac: Mapped[str | None]=mapped_column(String(17),nullable=True)  # unique index created in seed()
+    last_seen_at: Mapped[datetime | None]=mapped_column(DateTime(timezone=True),nullable=True)
+class IpChange(Base):
+    __tablename__='ip_changes'
+    id: Mapped[int]=mapped_column(primary_key=True)
+    printer_id: Mapped[int]=mapped_column(ForeignKey('printers.id'))
+    at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=lambda:datetime.now(timezone.utc))
+    old_ip: Mapped[str]=mapped_column(String(45),default='')
+    new_ip: Mapped[str]=mapped_column(String(45),default='')
+    evidence: Mapped[str]=mapped_column(String(200),default='')
+    printer: Mapped['Printer']=relationship()
 class Reading(Base):
     __tablename__='readings'
     __table_args__=(UniqueConstraint('printer_id','day','kind'),)
@@ -105,10 +117,14 @@ class BillingConfig(Base):
     fixed_fee: Mapped[Decimal]=mapped_column(Numeric(12,2),default=Decimal('0'))
     jump_limit: Mapped[int]=mapped_column(Integer,default=2000)
     collection_interval_hours: Mapped[int]=mapped_column(Integer,default=24)
+    scan_subnets: Mapped[str]=mapped_column(String(500),default='')
+    arp_router: Mapped[str]=mapped_column(String(45),default='')
 class CollectionState(Base):
     __tablename__='collection_state'
     id: Mapped[int]=mapped_column(primary_key=True)
     last_run_at: Mapped[datetime | None]=mapped_column(DateTime(timezone=True),nullable=True)
+    last_locate_at: Mapped[datetime | None]=mapped_column(DateTime(timezone=True),nullable=True)
+    last_locate_summary: Mapped[str]=mapped_column(String(300),default='')
 class DiscoveryRun(Base):
     __tablename__='discovery_run'
     id: Mapped[int]=mapped_column(primary_key=True)
@@ -122,8 +138,8 @@ class InvoiceSummary(Base):
     fixed_fee: Mapped[Decimal | None]=mapped_column(Numeric(12,2),nullable=True)
     billed_total: Mapped[Decimal | None]=mapped_column(Numeric(12,2),nullable=True)
 
-def audit(db,request,action,details):
-    db.add(Audit(actor=logged(request)['name'],action=action,details=str(details)[:1000]))
+def audit(db,request,action,details,actor=None):
+    db.add(Audit(actor=actor or logged(request)['name'],action=action,details=str(details)[:1000]))
 def event(db,p,day,kind,code,details):
     if not db.scalar(select(CollectionEvent.id).where(CollectionEvent.printer_id==p.id,CollectionEvent.day==day,CollectionEvent.kind==kind,CollectionEvent.code==code)):
         db.add(CollectionEvent(printer_id=p.id,day=day,kind=kind,code=code,details=details[:200]))
@@ -144,9 +160,15 @@ def redirect(path):return RedirectResponse(path,status_code=303)
 def seed():
     Base.metadata.create_all(engine)
     # Idempotent additions for databases created by the first release.
+    timestamp='TIMESTAMP WITH TIME ZONE' if engine.dialect.name=='postgresql' else 'TIMESTAMP'
     with engine.begin() as connection:
-        existing={row[1] for row in connection.execute(text('PRAGMA table_info(printers)'))} if engine.dialect.name=='sqlite' else set()
-        for column,definition in {
+        def add_columns(table,columns):
+            existing={row[1] for row in connection.execute(text(f'PRAGMA table_info({table})'))} if engine.dialect.name=='sqlite' else set()
+            for column,definition in columns.items():
+                if engine.dialect.name!='sqlite' or column not in existing:
+                    condition='IF NOT EXISTS ' if engine.dialect.name=='postgresql' else ''
+                    connection.execute(text(f'ALTER TABLE {table} ADD COLUMN {condition}{column} {definition}'))
+        add_columns('printers',{
             'snmp_version':"VARCHAR(4) NOT NULL DEFAULT '2c'",
             'rate_bw':'NUMERIC(12,4) NOT NULL DEFAULT 0',
             'rate_color':'NUMERIC(12,4) NOT NULL DEFAULT 0',
@@ -154,15 +176,17 @@ def seed():
             'allowance_color':'INTEGER NOT NULL DEFAULT 0',
             'rollover':'INTEGER',
             'oid_candidate':"VARCHAR(100) NOT NULL DEFAULT ''",
-            'discovery_note':"VARCHAR(200) NOT NULL DEFAULT ''"
-        }.items():
-            if engine.dialect.name!='sqlite' or column not in existing:
-                condition='IF NOT EXISTS ' if engine.dialect.name=='postgresql' else ''
-                connection.execute(text(f'ALTER TABLE printers ADD COLUMN {condition}{column} {definition}'))
-        if engine.dialect.name=='postgresql':
-            connection.execute(text('ALTER TABLE billing_config ADD COLUMN IF NOT EXISTS collection_interval_hours INTEGER NOT NULL DEFAULT 24'))
-        elif 'collection_interval_hours' not in {row[1] for row in connection.execute(text('PRAGMA table_info(billing_config)'))}:
-            connection.execute(text('ALTER TABLE billing_config ADD COLUMN collection_interval_hours INTEGER NOT NULL DEFAULT 24'))
+            'discovery_note':"VARCHAR(200) NOT NULL DEFAULT ''",
+            'mac':'VARCHAR(17)',
+            'last_seen_at':timestamp})
+        connection.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ix_printers_mac ON printers (mac)'))
+        add_columns('billing_config',{
+            'collection_interval_hours':'INTEGER NOT NULL DEFAULT 24',
+            'scan_subnets':"VARCHAR(500) NOT NULL DEFAULT ''",
+            'arp_router':"VARCHAR(45) NOT NULL DEFAULT ''"})
+        add_columns('collection_state',{
+            'last_locate_at':timestamp,
+            'last_locate_summary':"VARCHAR(300) NOT NULL DEFAULT ''"})
     with Session(engine) as db:
         if not db.get(BillingConfig,1):db.add(BillingConfig(id=1))
         if not db.get(CollectionState,1):db.add(CollectionState(id=1))
@@ -178,13 +202,6 @@ def seed():
                 db.add(Printer(**{k:v for k,v in row.items() if k in ('name','serial','model','ip','raw_ip','owner','group_name') and (k!='serial' or v)}))
         db.commit()
 MARKER_BASE='1.3.6.1.2.1.43.10.2.1'
-def snmp_args(version,command):
-    if version=='3':
-        username=os.environ.get('SNMPV3_USER');auth=os.environ.get('SNMPV3_AUTH_PASSWORD');privacy=os.environ.get('SNMPV3_PRIV_PASSWORD')
-        if not all((username,auth,privacy)):return None
-        return [command,'-v','3','-l','authPriv','-u',username,'-a','SHA','-A',auth,'-x','AES','-X',privacy]
-    if version not in ('1','2c'):return None
-    return [command,'-v',version,'-c',os.environ.get('SNMP_COMMUNITY','public')]
 def snmp(ip,oid,version='2c'):
     if not ip or not VALID_OID.fullmatch(oid):return None
     try:
@@ -249,13 +266,127 @@ def discover_all_existing():
             run.running=0
             run.finished_at=datetime.now(timezone.utc)
             db.commit()
+def utcnow():return datetime.now(timezone.utc)
+def aware(value):return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
+STATUS_LABELS={'ok':'confirmada','learned':'MAC aprendido','nic_changed':'MAC atualizado (série confere)','moved':'IP atualizado',
+    'mismatch':'outro equipamento no IP','serial_warning':'série divergente','unreachable':'sem resposta','unverified':'sem MAC/série via SNMP','no_ip':'sem IP'}
+def mac_owner(db,mac,exclude_id=None):
+    owner=db.scalar(select(Printer).where(Printer.mac==mac))
+    return owner if owner and owner.id!=exclude_id else None
+def identify(db,p,fp):
+    """Compare the device answering at p.ip with what is known about p and learn its MAC.
+
+    'mismatch' means another device answers at this IP: counters read there must
+    not be stored for p. Without a known MAC, a different serial only warns, so a
+    vendor serial format can never block collection that already works today."""
+    if not fp['reachable']:return 'unreachable'
+    macs=fp['macs'];serial_ok=serial_matches(p.serial,fp['serial'])
+    if p.mac:
+        if p.mac in macs:status='ok'
+        elif serial_ok:status='nic_changed' if macs else 'ok'
+        elif not macs and not fp['serial']:status='unverified'
+        else:return 'mismatch'
+    elif p.serial and fp['serial'] and not serial_ok:return 'serial_warning'
+    elif not macs:status='unverified'
+    else:status='learned'
+    if status in ('learned','nic_changed'):
+        mac=next((m for m in macs if not mac_owner(db,m,p.id)),None)
+        if mac is None:return 'mismatch'  # every MAC here belongs to another registered printer
+        p.mac=mac
+    if status!='unverified':p.last_seen_at=utcnow()
+    return status
+def relocate(db,lost,conf,actor,allow_sweep=True):
+    """Find the new address of printers that disappeared. A move needs SNMP confirmation
+    (same MAC or serial) and a single candidate; ambiguous evidence changes nothing.
+    A printer whose IP is taken over by a relocated one is searched again in the same
+    run with the evidence already gathered (DHCP swaps are resolved together)."""
+    today=date.today();found={};notes=[];moved=set();by_mac=None;scan=None;queue=list(lost)
+    def matches(p,fp):return bool((p.mac and p.mac in fp['macs']) or serial_matches(p.serial,fp['serial']))
+    for _ in range(3):
+        if not queue:break
+        candidates={};remaining=list(queue)
+        if any(p.mac for p in remaining):
+            if by_mac is None:
+                by_mac={}
+                for ip,mac in arp_hints(conf.arp_router or None).items():by_mac.setdefault(mac,set()).add(ip)
+            for p in list(remaining):
+                ips=by_mac.get(p.mac,set())-{p.ip} if p.mac else set()
+                if len(ips)!=1:continue
+                ip=next(iter(ips))
+                if ip not in found:found[ip]=fingerprint(ip,p.snmp_version)
+                if found[ip]['reachable'] and matches(p,found[ip]):
+                    candidates[p.id]=(ip,'ARP do roteador' if conf.arp_router else 'ARP local');remaining.remove(p)
+        if remaining and allow_sweep and conf.scan_subnets:
+            if scan is None:
+                try:scan=sweep(conf.scan_subnets,versions=[p.snmp_version for p in lost])
+                except ValueError as exc:scan={};notes.append(str(exc))
+                found.update(scan)
+            for p in list(remaining):
+                ips=[ip for ip,fp in scan.items() if ip!=p.ip and matches(p,fp)]
+                if len(ips)==1:candidates[p.id]=(ips[0],'varredura SNMP');remaining.remove(p)
+                elif len(ips)>1:event(db,p,today,'net','locate_ambiguous',f'MAC/série em vários IPs: {", ".join(ips[:5])}')
+                else:event(db,p,today,'net','not_located','Não encontrada por MAC/série nas redes configuradas')
+        by_ip={};queue=[]
+        for pid,(ip,_) in candidates.items():by_ip.setdefault(ip,[]).append(pid)
+        for ip,pids in by_ip.items():
+            if len(pids)>1:
+                for pid in pids:event(db,db.get(Printer,pid),today,'net','locate_ambiguous',f'{ip} reivindicado por {len(pids)} impressoras')
+                continue
+            p=db.get(Printer,pids[0]);source=candidates[p.id][1];fp=found[ip]
+            for q in db.scalars(select(Printer).where(Printer.ip==ip,Printer.id!=p.id)).all():
+                if q.id in candidates:continue  # it is moving elsewhere in this same run
+                db.add(IpChange(printer_id=q.id,old_ip=q.ip,new_ip='',evidence=f'IP passou a responder como {p.name}'[:200]))
+                event(db,q,today,'net','ip_conflict',f'{q.ip} agora é {p.name}; IP removido até localizar')
+                audit(db,None,'printer.ip_cleared',f'id={q.id}, {q.ip} agora pertence a id={p.id}',actor=actor)
+                q.ip=''
+                if q.mac or q.serial:queue.append(q)
+            old=p.ip;p.ip=ip;p.last_seen_at=utcnow()
+            if not p.mac:p.mac=next((m for m in fp['macs'] if not mac_owner(db,m,p.id)),None)
+            evidence=f'{source}; MAC {p.mac or "?"}'+(f'; série {fp["serial"]}' if fp['serial'] else '')
+            db.add(IpChange(printer_id=p.id,old_ip=old or '',new_ip=ip,evidence=evidence[:200]))
+            event(db,p,today,'net','ip_changed',f'{old or "sem IP"} -> {ip} ({source})')
+            audit(db,None,'printer.ip_changed',f'id={p.id}, {old or "sem IP"} -> {ip}; {evidence}',actor=actor)
+            moved.add(p.id)
+    return moved,notes
+def verify_and_locate(db,printers,actor='sistema',force=False):
+    """Check who answers at each printer's IP; relocate the missing ones by MAC/serial."""
+    conf=db.get(BillingConfig,1);state=db.get(CollectionState,1);today=date.today();statuses={};lost=[]
+    for p in printers:
+        if not p.ip:
+            statuses[p.id]='no_ip'
+            if p.mac or p.serial:lost.append(p)
+            continue
+        status=identify(db,p,fingerprint(p.ip,p.snmp_version));statuses[p.id]=status
+        if status=='mismatch':event(db,p,today,'net','identity_mismatch',f'Outro equipamento responde em {p.ip}; leitura bloqueada')
+        if status=='serial_warning':event(db,p,today,'net','serial_mismatch',f'Série informada pelo equipamento em {p.ip} difere do cadastro')
+        if status=='nic_changed':event(db,p,today,'net','mac_changed',f'Novo MAC {p.mac} com a mesma série')
+        if status in ('unreachable','mismatch') and (p.mac or p.serial):lost.append(p)
+    notes=[]
+    if lost:
+        allow_sweep=force or not state.last_locate_at or utcnow()-aware(state.last_locate_at)>=timedelta(minutes=30)
+        moved,notes=relocate(db,lost,conf,actor,allow_sweep)
+        for pid in moved:statuses[pid]='moved'
+        if allow_sweep:state.last_locate_at=utcnow()
+    if force or lost:
+        counts={}
+        for value in statuses.values():counts[STATUS_LABELS[value]]=counts.get(STATUS_LABELS[value],0)+1
+        state.last_locate_summary=('; '.join(f'{n} {label}' for label,n in sorted(counts.items(),key=lambda x:-x[1]))+('. '+' '.join(notes) if notes else ''))[:300]
+        if force:state.last_locate_at=utcnow()
+    return statuses
+def locate_all(actor):
+    with Session(engine) as db:
+        verify_and_locate(db,db.scalars(select(Printer).where(Printer.active==1).order_by(Printer.id)).all(),actor,force=True)
+        db.commit()
 def collect(printer_id=None,scheduled=False):
     today=date.today()
     with Session(engine) as db:
         conf=db.get(BillingConfig,1)
         query=select(Printer).where(Printer.active==1)
         if printer_id is not None:query=query.where(Printer.id==printer_id)
-        for p in db.scalars(query).all():
+        printers=db.scalars(query).all()
+        statuses=verify_and_locate(db,[p for p in printers if p.oid_bw or p.oid_color],'coleta')
+        for p in printers:
+            if statuses.get(p.id)=='mismatch':continue  # never store another device's counter under this printer
             for kind,oid in [('bw',p.oid_bw),('color',p.oid_color)]:
                 if not oid or not p.ip:continue
                 val=snmp(p.ip,oid,p.snmp_version)
@@ -387,7 +518,16 @@ def printers_page(request:Request):
             order_by=(Reading.day.desc(),Reading.id.desc())).label('rank')).subquery()
         latest={(reading.printer_id,reading.kind):reading for reading in db.scalars(
             select(Reading).join(ranked,Reading.id==ranked.c.id).where(ranked.c.rank==1))}
-        return page(request,'printers.html',printers=printers,latest=latest,discovery=db.get(DiscoveryRun,1))
+        changes=db.scalars(select(IpChange).order_by(IpChange.id.desc()).limit(15)).all()
+        for change in changes:change.printer  # load before the session closes
+        return page(request,'printers.html',printers=printers,latest=latest,discovery=db.get(DiscoveryRun,1),
+                    changes=changes,locate=db.get(CollectionState,1),network=db.get(BillingConfig,1))
+@app.post('/printers/locate')
+async def locate_now(request:Request,token:str=Form()):
+    user=authorize(request,True);csrf(request,token)
+    async with collection_lock:
+        await asyncio.to_thread(locate_all,user['name'])
+    return redirect('/printers')
 @app.post('/printers/discover-all')
 def discover_all(request:Request,background_tasks:BackgroundTasks,token:str=Form()):
     authorize(request,True);csrf(request,token)
@@ -410,7 +550,7 @@ def edit_printer_page(request:Request,printer_id:int):
         printer=db.get(Printer,printer_id)
         if not printer:raise HTTPException(404)
         return page(request,'printer_form.html',printer=printer)
-def printer_fields(db, name, serial, model, ip, owner, group_name, oid_bw, oid_color, snmp_version, rate_bw, rate_color, allowance_bw, allowance_color, rollover, exclude_id=None):
+def printer_fields(db, name, serial, model, ip, owner, group_name, oid_bw, oid_color, snmp_version, rate_bw, rate_color, allowance_bw, allowance_color, rollover, exclude_id=None, mac=''):
     import ipaddress
     rollover = rollover.strip()
     if rollover and (not rollover.isascii() or not rollover.isdecimal()):
@@ -433,31 +573,45 @@ def printer_fields(db, name, serial, model, ip, owner, group_name, oid_bw, oid_c
         raise HTTPException(400,'OID inválido')
     if snmp_version not in ('1','2c','3') or any(values[k]<0 for k in ('rate_bw','rate_color','allowance_bw','allowance_color')) or (rollover_value is not None and rollover_value<2):
         raise HTTPException(400,'Configuração de coleta/cobrança inválida')
+    if mac.strip():
+        values['mac']=normalize_mac(mac)
+        if not values['mac']:raise HTTPException(400,'MAC inválido. Use o formato 00:11:22:33:44:55')
+        if mac_owner(db,values['mac'],exclude_id):raise HTTPException(400,'MAC já cadastrado em outra impressora')
+    else:values['mac']=None
     if values['serial']:
         existing=db.scalar(select(Printer).where(Printer.serial==values['serial']))
         if existing and existing.id!=exclude_id:
             raise HTTPException(400,'Número de série já cadastrado')
     return values
+def note_identity(db,printer):
+    """Learn the MAC during registration/discovery and explain the result on the form."""
+    if not printer.ip:return
+    status=identify(db,printer,fingerprint(printer.ip,printer.snmp_version))
+    extra={'learned':f' MAC {printer.mac} registrado.','ok':' MAC confere.','nic_changed':f' MAC atualizado para {printer.mac}.',
+           'mismatch':' ATENÇÃO: o equipamento neste IP não tem o MAC cadastrado.','serial_warning':' ATENÇÃO: a série informada pelo equipamento difere do cadastro.'}.get(status,'')
+    printer.discovery_note=(printer.discovery_note+extra)[:200]
 @app.post('/printers')
-def add_printer(request:Request,name:str=Form(),serial:str=Form(''),model:str=Form(''),ip:str=Form(''),owner:str=Form(''),group_name:str=Form(''),oid_bw:str=Form(''),oid_color:str=Form(''),snmp_version:str=Form('2c'),rate_bw:str=Form('0'),rate_color:str=Form('0'),allowance_bw:int=Form(0),allowance_color:int=Form(0),rollover:str=Form(''),token:str=Form()):
+def add_printer(request:Request,name:str=Form(),serial:str=Form(''),model:str=Form(''),ip:str=Form(''),owner:str=Form(''),group_name:str=Form(''),oid_bw:str=Form(''),oid_color:str=Form(''),snmp_version:str=Form('2c'),rate_bw:str=Form('0'),rate_color:str=Form('0'),allowance_bw:int=Form(0),allowance_color:int=Form(0),rollover:str=Form(''),mac:str=Form(''),token:str=Form()):
     authorize(request,True);csrf(request,token)
     with Session(engine) as db:
-        values=printer_fields(db,name,serial,model,ip,owner,group_name,oid_bw,oid_color,snmp_version,rate_bw,rate_color,allowance_bw,allowance_color,rollover)
+        values=printer_fields(db,name,serial,model,ip,owner,group_name,oid_bw,oid_color,snmp_version,rate_bw,rate_color,allowance_bw,allowance_color,rollover,mac=mac)
         printer=Printer(**values,raw_ip=values['ip'])
         discover_oid(printer)
+        note_identity(db,printer)
         db.add(printer);db.flush()
         audit(db,request,'printer.create',f'{name} / {serial}')
         db.commit()
         printer_id=printer.id
     return redirect(f'/printers/{printer_id}/edit')
 @app.post('/printers/{printer_id}')
-def edit_printer(request:Request,printer_id:int,name:str=Form(),serial:str=Form(''),model:str=Form(''),ip:str=Form(''),owner:str=Form(''),group_name:str=Form(''),oid_bw:str=Form(''),oid_color:str=Form(''),snmp_version:str=Form('2c'),rate_bw:str=Form('0'),rate_color:str=Form('0'),allowance_bw:int=Form(0),allowance_color:int=Form(0),rollover:str=Form(''),token:str=Form()):
+def edit_printer(request:Request,printer_id:int,name:str=Form(),serial:str=Form(''),model:str=Form(''),ip:str=Form(''),owner:str=Form(''),group_name:str=Form(''),oid_bw:str=Form(''),oid_color:str=Form(''),snmp_version:str=Form('2c'),rate_bw:str=Form('0'),rate_color:str=Form('0'),allowance_bw:int=Form(0),allowance_color:int=Form(0),rollover:str=Form(''),mac:str=Form(''),token:str=Form()):
     authorize(request,True);csrf(request,token)
     with Session(engine) as db:
         p=db.get(Printer,printer_id)
         if not p:raise HTTPException(404)
-        values=printer_fields(db,name,serial,model,ip,owner,group_name,oid_bw,oid_color,snmp_version,rate_bw,rate_color,allowance_bw,allowance_color,rollover,p.id)
+        values=printer_fields(db,name,serial,model,ip,owner,group_name,oid_bw,oid_color,snmp_version,rate_bw,rate_color,allowance_bw,allowance_color,rollover,p.id,mac=mac)
         before={key:str(getattr(p,key)) for key in values}
+        if values['ip']!=p.ip:db.add(IpChange(printer_id=p.id,old_ip=p.ip,new_ip=values['ip'],evidence=f'edição manual por {logged(request)["name"]}'))
         for key,value in values.items():setattr(p,key,value)
         audit(db,request,'printer.edit',json.dumps({'id':p.id,'before':before,'after':{k:str(v) for k,v in values.items()}},ensure_ascii=False))
         db.commit()
@@ -469,6 +623,7 @@ def discover_printer(request:Request,printer_id:int,token:str=Form()):
         printer=db.get(Printer,printer_id)
         if not printer:raise HTTPException(404)
         discover_oid(printer)
+        note_identity(db,printer)
         audit(db,request,'printer.discover',f'id={printer.id}: {printer.discovery_note}')
         db.commit()
     return redirect(f'/printers/{printer_id}/edit')
@@ -635,15 +790,23 @@ def settings_page(request:Request):
     with Session(engine) as db:
         return page(request,'settings.html',config=db.get(BillingConfig,1),audits=db.scalars(select(Audit).order_by(Audit.id.desc()).limit(100)).all())
 @app.post('/settings')
-def settings_update(request:Request,fixed_fee:str=Form(),jump_limit:int=Form(),collection_interval_hours:int=Form(24),token:str=Form()):
+def settings_update(request:Request,fixed_fee:str=Form(),jump_limit:int=Form(),collection_interval_hours:int=Form(24),scan_subnets:str=Form(''),arp_router:str=Form(''),token:str=Form()):
+    import ipaddress
     authorize(request,True);csrf(request,token)
     try:fee=money(fixed_fee)
     except ValueError as exc:raise HTTPException(400,str(exc))
     if fee<0 or jump_limit<1 or not 1<=collection_interval_hours<=168:raise HTTPException(400,'Intervalo deve ficar entre 1 e 168 horas')
+    try:scan_subnets=', '.join(str(n) for n in parse_subnets(scan_subnets))
+    except ValueError as exc:raise HTTPException(400,str(exc))
+    arp_router=arp_router.strip()
+    if arp_router:
+        try:ipaddress.ip_address(arp_router)
+        except ValueError:raise HTTPException(400,'IP do roteador inválido')
     with Session(engine) as db:
         config=db.get(BillingConfig,1)
-        audit(db,request,'billing.settings',f'fixed_fee={config.fixed_fee}->{fee}, jump_limit={config.jump_limit}->{jump_limit}, intervalo={config.collection_interval_hours}->{collection_interval_hours}h')
-        config.fixed_fee=fee;config.jump_limit=jump_limit;config.collection_interval_hours=collection_interval_hours;db.commit()
+        audit(db,request,'billing.settings',f'fixed_fee={config.fixed_fee}->{fee}, jump_limit={config.jump_limit}->{jump_limit}, intervalo={config.collection_interval_hours}->{collection_interval_hours}h, redes={config.scan_subnets!r}->{scan_subnets!r}, roteador={config.arp_router!r}->{arp_router!r}')
+        config.fixed_fee=fee;config.jump_limit=jump_limit;config.collection_interval_hours=collection_interval_hours
+        config.scan_subnets=scan_subnets;config.arp_router=arp_router;db.commit()
     return redirect('/settings')
 @app.get('/invoices/{iid}/pdf')
 def invoice_file(request:Request,iid:int):

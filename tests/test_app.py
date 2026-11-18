@@ -23,7 +23,7 @@ class Workflows(unittest.TestCase):
     @classmethod
     def setUpClass(cls):cls.client=TestClient(app);cls.client.__enter__()
     @classmethod
-    def tearDownClass(cls):cls.client.__exit__(None,None,None);_dir.cleanup()
+    def tearDownClass(cls):cls.client.__exit__(None,None,None)  # _dir is removed at interpreter exit; other test modules share the engine
     def login(self,name,password):
         token=re.search(r'name="token" value="([^"]+)',self.client.get('/login').text).group(1)
         response=self.client.post('/login',data={'username':name,'password':password,'token':token},follow_redirects=True)
