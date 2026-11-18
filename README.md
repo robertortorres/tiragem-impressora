@@ -17,6 +17,18 @@ No cadastro, o app consulta a Printer MIB da impressora. Para impressoras já ca
 
 As impressoras recebem SNMP v2c por padrão, usando `SNMP_COMMUNITY`. Para impressoras que respondem apenas em SNMPv1, selecione v1 na edição; v1 usa a mesma comunidade configurada para v2c. Para v3, use as variáveis `SNMPV3_USER`, `SNMPV3_AUTH_PASSWORD` e `SNMPV3_PRIV_PASSWORD` e selecione v3 no cadastro. Configure uma comunidade/usuário de leitura com acesso restrito. Docker precisa alcançar o endereço da impressora. Antes de associar um contador SNMP à cobrança, confira se ele corresponde ao contador exibido e faturado.
 
+## Mudança de IP (identificação por MAC)
+
+Impressoras em DHCP podem mudar de IP. Sem verificação, o contador de outra impressora poderia ser gravado no cadastro errado. Antes de cada coleta, o app consulta via SNMP quem responde no IP cadastrado: os MACs das interfaces (IF-MIB `ifPhysAddress`) e o número de série (Printer MIB `prtGeneralSerialNumber`).
+
+- **Primeira coleta**: o MAC é aprendido e exibido sob o IP na lista. Também pode ser digitado na edição; apague o campo para reaprender.
+- **Outro equipamento no IP** (MAC diferente e série que não confere): a leitura é bloqueada e o alerta *Outro equipamento no IP* aparece no dashboard.
+- **Impressora sumiu ou foi substituída no IP**: o app procura o MAC na tabela ARP do roteador (SNMP v2c, opcional) e, se necessário, varre as redes configuradas procurando o mesmo MAC ou a mesma série. O IP só muda quando há **um único** endereço que confirma a identidade; a mudança fica em *Mudanças de IP recentes*, na auditoria e nos alertas. Se o IP novo estava cadastrado em outra impressora, ela perde o IP e é procurada na mesma execução (troca de IPs entre duas impressoras).
+- Impressoras **sem IP** mas com série cadastrada também são localizadas pela varredura.
+- Uma série diferente do cadastro, sem MAC conhecido, apenas gera alerta (fabricantes formatam a série de maneiras diferentes) e não bloqueia a coleta.
+
+Configure em **Configurações → Localização por MAC** as redes das impressoras (CIDR, até 4096 endereços no total) e, opcionalmente, o IP do roteador (por exemplo, MikroTik com SNMP habilitado; comunidade em `ARP_SNMP_COMMUNITY` ou `SNMP_COMMUNITY`). A varredura automática roda no máximo a cada 30 minutos; o botão **Localizar por MAC** na página Impressoras força a verificação de todas as impressoras ativas. A solução definitiva continua sendo reservar IP por MAC no servidor DHCP; este mecanismo protege o histórico enquanto isso não acontece.
+
 ## Coleta e relatórios
 
 Em **Configurações**, selecione a coleta automática a cada 1 a 168 horas (padrão 24). A última execução é persistida no banco. Na primeira inicialização após instalar esta versão, a coleta programada pode começar imediatamente. Use **Capturar todas agora** ou **Capturar** na linha de uma impressora para coleta manual. Cada amostra com horário é gravada em `poll_samples`; a tabela de leituras diárias guarda a última amostra do dia para relatórios.

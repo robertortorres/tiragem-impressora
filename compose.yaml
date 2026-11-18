@@ -26,6 +26,8 @@ services:
       SNMPV3_USER: ${SNMPV3_USER:-}
       SNMPV3_AUTH_PASSWORD: ${SNMPV3_AUTH_PASSWORD:-}
       SNMPV3_PRIV_PASSWORD: ${SNMPV3_PRIV_PASSWORD:-}
+      ARP_SNMP_COMMUNITY: ${ARP_SNMP_COMMUNITY:-}
+      SWEEP_WORKERS: ${SWEEP_WORKERS:-64}
       TZ: America/Sao_Paulo
     depends_on:
       db:
